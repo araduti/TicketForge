@@ -1,2 +1,262 @@
 # TicketForge
+
 Open-source, forge-your-own intelligent ticket enhancer.
+
+A **lightweight, self-hosted AI layer** that enriches enterprise IT tickets
+(ServiceNow, Jira, Zendesk, …) with intelligent categorisation, priority
+scoring, queue routing, automation opportunity detection, KB suggestions, and
+root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
+
+---
+
+## Architecture
+
+```
+                       ┌────────────────────────────────────────┐
+                       │          External Ticket Systems        │
+                       │  ServiceNow │  Jira Cloud  │  Zendesk  │
+                       └──────┬──────┴──────┬────────┴─────┬─────┘
+                              │  REST API / │              │
+                              │  Webhooks   │              │
+                              ▼             ▼              ▼
+                       ┌─────────────────────────────────────────┐
+                       │          TicketForge  (FastAPI)          │
+                       │                                         │
+                       │  POST /analyse   POST /webhook/{source} │
+                       │                                         │
+                       │  ┌──────────────┐  ┌─────────────────┐ │
+                       │  │ Connectors   │  │   API Key Auth  │ │
+                       │  │ (parse only) │  │   Rate Limiter  │ │
+                       │  └──────┬───────┘  └─────────────────┘ │
+                       │         │                               │
+                       │  ┌──────▼──────────────────────────┐   │
+                       │  │        TicketProcessor           │   │
+                       │  │                                  │   │
+                       │  │  1. Build prompt                 │   │
+                       │  │  2. Call Ollama (Llama 3.1 8B)   │   │
+                       │  │  3. Parse structured JSON        │   │
+                       │  │  4. Assemble EnrichedTicket      │   │
+                       │  └──────┬──────────────┬───────────┘   │
+                       │         │              │               │
+                       │  ┌──────▼──────┐ ┌────▼────────────┐  │
+                       │  │ Automation  │ │   SQLite cache  │  │
+                       │  │ Detector    │ │  (24-hour TTL)  │  │
+                       │  │ (DBSCAN +   │ └─────────────────┘  │
+                       │  │  MiniLM-L6) │                       │
+                       │  └─────────────┘                       │
+                       └─────────────────────────────────────────┘
+                                          │
+                               ┌──────────▼──────────┐
+                               │        Ollama        │
+                               │  (Llama 3.1 8B / 70B │
+                               │   or Mistral-Nemo)   │
+                               └─────────────────────┘
+```
+
+### Key components
+
+| File | Role |
+|---|---|
+| `main.py` | FastAPI app, routes, auth, rate limiting, lifecycle |
+| `config.py` | Pydantic-settings: all env-var config in one place |
+| `models.py` | Pydantic request / response schemas |
+| `ticket_processor.py` | Core pipeline: prompt → Ollama → structured JSON |
+| `automation_detector.py` | sentence-transformers + DBSCAN clustering |
+| `prompts.py` | All LLM prompt templates |
+| `connectors/servicenow.py` | ServiceNow Table API client |
+| `connectors/jira.py` | Jira Cloud / Server REST API client |
+| `connectors/zendesk.py` | Zendesk Support API v2 client |
+
+---
+
+## Directory structure
+
+```
+TicketForge/
+├── connectors/
+│   ├── __init__.py
+│   ├── jira.py
+│   ├── servicenow.py
+│   └── zendesk.py
+├── automation_detector.py
+├── config.py
+├── docker-compose.yml
+├── Dockerfile
+├── main.py
+├── models.py
+├── prompts.py
+├── requirements.txt
+├── ticket_processor.py
+└── README.md
+```
+
+---
+
+## Setup & run
+
+### Prerequisites
+
+* Docker ≥ 24 and Docker Compose v2
+* ~4 GB RAM free for the 8B quantized model
+* (Optional) NVIDIA GPU — uncomment the `deploy` section in `docker-compose.yml`
+
+### 1 · Clone and configure
+
+```bash
+git clone https://github.com/araduti/TicketForge.git
+cd TicketForge
+
+# Create an env file — at minimum set a real API key
+cat > .env <<'EOF'
+API_KEYS=my-super-secret-key
+OLLAMA_MODEL=llama3.1:8b
+# ServiceNow, Jira, Zendesk credentials go here (optional)
+EOF
+```
+
+### 2 · Start the stack
+
+```bash
+docker compose up -d
+```
+
+### 3 · Pull the LLM model (first run only, ~4.5 GB download)
+
+```bash
+docker compose exec ollama ollama pull llama3.1:8b
+```
+
+### 4 · Verify health
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok","ollama_reachable":true,"db_ok":true,"version":"0.1.0"}
+```
+
+---
+
+## Example API calls
+
+### Analyse a ticket inline
+
+```bash
+curl -s -X POST http://localhost:8000/analyse \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: my-super-secret-key" \
+  -d '{
+    "ticket": {
+      "id": "INC0012345",
+      "source": "servicenow",
+      "title": "Cannot connect to VPN from home",
+      "description": "Since this morning I cannot connect to the corporate VPN. I get error code 800. Tried restarting the client.",
+      "reporter": "john.doe@example.com",
+      "tags": ["vpn", "remote-work"]
+    },
+    "include_automation_detection": true
+  }' | jq .
+```
+
+**Example response** (truncated):
+
+```json
+{
+  "success": true,
+  "data": {
+    "ticket_id": "INC0012345",
+    "source": "servicenow",
+    "summary": "User is unable to connect to corporate VPN from home since this morning, receiving error code 800.",
+    "category": {
+      "category": "Network",
+      "sub_category": "VPN",
+      "confidence": 0.95
+    },
+    "priority": {
+      "priority": "high",
+      "score": 72,
+      "rationale": "VPN outage affects remote work capability and productivity."
+    },
+    "routing": {
+      "recommended_queue": "Network Ops",
+      "recommended_team": "Network Infrastructure",
+      "rationale": "VPN issues require network team investigation."
+    },
+    "automation": {
+      "score": 0,
+      "suggestion_type": "none",
+      "suggestion": "",
+      "pattern_count": 0
+    },
+    "kb_articles": [
+      {
+        "title": "VPN Troubleshooting Guide — Error Codes 800/868",
+        "url": "",
+        "relevance_score": 0.92
+      }
+    ],
+    "root_cause": {
+      "hypothesis": "VPN gateway may be blocking UDP port 1194 for the user's ISP.",
+      "confidence": 0.78,
+      "included": true
+    },
+    "processing_time_ms": 4231.5
+  }
+}
+```
+
+### Ingest a ServiceNow webhook
+
+```bash
+curl -s -X POST http://localhost:8000/webhook/servicenow \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: my-super-secret-key" \
+  -d '{
+    "payload": {
+      "sys_id": "abc123",
+      "number": "INC0099",
+      "short_description": "Outlook keeps crashing on startup",
+      "description": "After the latest Windows update Outlook crashes immediately on open.",
+      "priority": "3",
+      "caller_id": "jane.smith@example.com",
+      "assigned_to": "",
+      "sys_created_on": "2024-03-01 09:00:00",
+      "sys_tags": "email,outlook"
+    }
+  }'
+```
+
+### Metrics (Prometheus)
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+---
+
+## Configuration reference
+
+All settings are read from environment variables (or a `.env` file):
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEYS` | `changeme` | Comma-separated list of valid API keys |
+| `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama service URL |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Model to use for analysis |
+| `OLLAMA_TIMEOUT` | `120` | Seconds before LLM call times out |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./ticketforge.db` | SQLite path |
+| `DB_TICKET_TTL_HOURS` | `24` | Hours to retain ticket cache |
+| `DBSCAN_EPS` | `0.3` | DBSCAN neighbourhood distance |
+| `DBSCAN_MIN_SAMPLES` | `3` | DBSCAN minimum cluster size |
+| `AUTOMATION_LOOKBACK_HOURS` | `168` | Rolling window for clustering (7 days) |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Max requests/min per client IP |
+| `SERVICENOW_INSTANCE` | _(empty)_ | e.g. `mycompany.service-now.com` |
+| `JIRA_BASE_URL` | _(empty)_ | e.g. `https://mycompany.atlassian.net` |
+| `ZENDESK_SUBDOMAIN` | _(empty)_ | e.g. `mycompany` |
+| `OUTBOUND_WEBHOOK_URL` | _(empty)_ | POST enriched JSON here (Slack, Teams, …) |
+| `LOG_LEVEL` | `INFO` | Structured log verbosity |
+
+---
+
+## License
+
+MIT
+
