@@ -9,24 +9,27 @@ Or via Docker Compose (see docker-compose.yml).
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
 import hmac
+import io
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 import httpx
 import structlog
 import structlog.stdlib
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 import aiosqlite
+import audit
 from automation_detector import AutomationDetector
 from config import settings
 from connectors.jira import JiraConnector
@@ -35,17 +38,28 @@ from connectors.zendesk import ZendeskConnector
 from models import (
     AnalyseRequest,
     AnalyseResponse,
+    AnalyticsResponse,
+    AuditLogResponse,
     AutomationOpportunity,
     AutomationSuggestionType,
+    BulkAnalyseRequest,
+    BulkAnalyseResponse,
+    CategoryCount,
     CategoryResult,
+    DailyTrend,
     EnrichedTicket,
     ErrorResponse,
+    ExportFormat,
     HealthResponse,
     Priority,
+    PriorityCount,
     PriorityResult,
     RawTicket,
+    Role,
     RootCauseHypothesis,
     RoutingResult,
+    SLAInfo,
+    SLAStatus,
     TicketSource,
     WebhookIngest,
 )
@@ -93,6 +107,17 @@ CREATE TABLE IF NOT EXISTS ticket_history (
     text TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    api_key_hash TEXT NOT NULL,
+    role TEXT NOT NULL,
+    action TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    status_code INTEGER NOT NULL DEFAULT 200,
+    detail TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -137,7 +162,19 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 Instrumentator().instrument(app).expose(app)
 
 
-# ── Authentication dependency ──────────────────────────────────────────────────
+# ── Authentication & RBAC dependencies ─────────────────────────────────────────
+
+_ROLE_HIERARCHY: dict[Role, int] = {Role.viewer: 0, Role.analyst: 1, Role.admin: 2}
+
+
+def _resolve_role(api_key: str) -> Role:
+    """Look up the role for an API key, defaulting to analyst."""
+    role_str = settings.api_key_roles.get(api_key, "analyst")
+    try:
+        return Role(role_str)
+    except ValueError:
+        return Role.analyst
+
 
 async def verify_api_key(x_api_key: str = Header(...)) -> str:
     """Validate the X-Api-Key header against the configured list."""
@@ -149,12 +186,69 @@ async def verify_api_key(x_api_key: str = Header(...)) -> str:
     return x_api_key
 
 
+def _require_role(minimum: Role):
+    """Return a FastAPI dependency that enforces a minimum role level."""
+
+    async def _check(x_api_key: str = Depends(verify_api_key)) -> str:
+        caller_role = _resolve_role(x_api_key)
+        if _ROLE_HIERARCHY[caller_role] < _ROLE_HIERARCHY[minimum]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires role '{minimum.value}' or higher",
+            )
+        return x_api_key
+
+    return _check
+
+
+require_viewer = _require_role(Role.viewer)
+require_analyst = _require_role(Role.analyst)
+require_admin = _require_role(Role.admin)
+
+
 # ── Helper to get processor (raises 503 if not ready) ─────────────────────────
 
 def _get_processor() -> TicketProcessor:
     if _processor is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     return _processor
+
+
+# ── SLA helper ─────────────────────────────────────────────────────────────────
+
+_SLA_TARGETS: dict[Priority, tuple[int, int]] = {
+    Priority.critical: (settings.sla_response_critical, settings.sla_resolution_critical),
+    Priority.high: (settings.sla_response_high, settings.sla_resolution_high),
+    Priority.medium: (settings.sla_response_medium, settings.sla_resolution_medium),
+    Priority.low: (settings.sla_response_low, settings.sla_resolution_low),
+}
+
+
+def compute_sla(priority: Priority, created_at: datetime) -> SLAInfo:
+    """Compute SLA status based on priority targets and elapsed time."""
+    response_target, resolution_target = _SLA_TARGETS[priority]
+    now = datetime.now(tz=timezone.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    elapsed = max(0.0, (now - created_at).total_seconds() / 60.0)
+
+    # breach_risk: ratio of elapsed to resolution target (capped at 1.0)
+    breach_risk = min(1.0, elapsed / resolution_target) if resolution_target > 0 else 0.0
+
+    if elapsed >= resolution_target:
+        sla_status = SLAStatus.breached
+    elif breach_risk >= 0.8:
+        sla_status = SLAStatus.at_risk
+    else:
+        sla_status = SLAStatus.within
+
+    return SLAInfo(
+        response_target_minutes=response_target,
+        resolution_target_minutes=resolution_target,
+        status=sla_status,
+        elapsed_minutes=round(elapsed, 1),
+        breach_risk=round(breach_risk, 3),
+    )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -185,17 +279,27 @@ async def health_check() -> HealthResponse:
 async def analyse_ticket(
     request: Request,
     body: AnalyseRequest,
-    _: str = Depends(verify_api_key),
+    api_key: str = Depends(require_analyst),
 ) -> AnalyseResponse:
     """
     Analyse a single ticket inline.
     Returns full enrichment: category, priority, routing, automation score, KB suggestions.
+    Requires analyst or admin role.
     """
     processor = _get_processor()
     enriched = await processor.process(
         body.ticket, include_automation=body.include_automation_detection
     )
+    enriched.sla = compute_sla(enriched.priority.priority, body.ticket.created_at)
     await _persist_ticket(enriched)
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="analyse",
+            resource=enriched.ticket_id,
+        )
     return AnalyseResponse(data=enriched)
 
 
@@ -209,21 +313,30 @@ async def ingest_webhook(
     request: Request,
     source: TicketSource,
     body: WebhookIngest,
-    _: str = Depends(verify_api_key),
+    api_key: str = Depends(require_analyst),
 ) -> AnalyseResponse:
     """
     Ingest a webhook payload from a source system and return enriched result.
-    Supports: servicenow, jira, zendesk.
+    Supports: servicenow, jira, zendesk. Requires analyst or admin role.
     """
     processor = _get_processor()
     ticket = _parse_webhook_payload(source, body.payload)
     enriched = await processor.process(ticket, include_automation=True)
+    enriched.sla = compute_sla(enriched.priority.priority, ticket.created_at)
     await _persist_ticket(enriched)
 
     # Fire-and-forget outbound webhook if configured
     if settings.outbound_webhook_url:
         asyncio.create_task(_send_outbound_webhook(enriched))
 
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="webhook_ingest",
+            resource=f"{source.value}:{enriched.ticket_id}",
+        )
     return AnalyseResponse(data=enriched)
 
 
@@ -234,9 +347,9 @@ async def ingest_webhook(
 )
 async def get_cached_ticket(
     ticket_id: str,
-    _: str = Depends(verify_api_key),
+    api_key: str = Depends(require_viewer),
 ) -> EnrichedTicket:
-    """Retrieve a previously processed ticket from the local cache."""
+    """Retrieve a previously processed ticket from the local cache. Requires viewer role or higher."""
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not ready")
     async with _db.execute(
@@ -246,7 +359,24 @@ async def get_cached_ticket(
     ) as cursor:
         row = await cursor.fetchone()
     if row is None:
+        if _db:
+            await audit.record(
+                _db,
+                api_key=api_key,
+                role=_resolve_role(api_key),
+                action="get_ticket",
+                resource=ticket_id,
+                status_code=404,
+            )
         raise HTTPException(status_code=404, detail="Ticket not found in cache")
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="get_ticket",
+            resource=ticket_id,
+        )
     # Return a minimal EnrichedTicket reconstructed from the cache
     return EnrichedTicket(
         ticket_id=row[0],
@@ -261,6 +391,212 @@ async def get_cached_ticket(
         root_cause=RootCauseHypothesis(),
         processed_at=datetime.fromisoformat(row[2]),
     )
+
+
+# ── Bulk analysis endpoint ────────────────────────────────────────────────────
+
+@app.post(
+    "/analyse/bulk",
+    response_model=BulkAnalyseResponse,
+    tags=["core"],
+)
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def analyse_bulk(
+    request: Request,
+    body: BulkAnalyseRequest,
+    api_key: str = Depends(require_analyst),
+) -> BulkAnalyseResponse:
+    """
+    Analyse multiple tickets in a single call (max 50).
+    Returns results for all tickets. Requires analyst or admin role.
+    """
+    processor = _get_processor()
+
+    async def _process_one(ticket: RawTicket) -> EnrichedTicket | None:
+        try:
+            enriched = await processor.process(
+                ticket, include_automation=body.include_automation_detection
+            )
+            enriched.sla = compute_sla(enriched.priority.priority, ticket.created_at)
+            await _persist_ticket(enriched)
+            return enriched
+        except Exception as e:  # noqa: BLE001
+            log.warning("bulk_analyse.ticket_failed", ticket_id=ticket.id, error=str(e))
+            return None
+
+    results = await asyncio.gather(*[_process_one(t) for t in body.tickets])
+    successes = [r for r in results if r is not None]
+    failed = len(results) - len(successes)
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="analyse_bulk",
+            resource=f"{len(body.tickets)} tickets",
+            detail=f"success={len(successes)}, failed={failed}",
+        )
+    return BulkAnalyseResponse(data=successes, total=len(successes), failed=failed)
+
+
+# ── Analytics endpoint ────────────────────────────────────────────────────────
+
+@app.get(
+    "/analytics",
+    response_model=AnalyticsResponse,
+    tags=["enterprise"],
+)
+async def get_analytics(
+    days: int = Query(default=30, ge=1, le=365, description="Look-back period in days"),
+    api_key: str = Depends(require_viewer),
+) -> AnalyticsResponse:
+    """
+    Return ticket analytics: counts by category, priority, trends.
+    Requires viewer role or higher.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    cutoff = datetime.now(tz=timezone.utc).isoformat()
+
+    # Total tickets
+    async with _db.execute("SELECT COUNT(*) FROM processed_tickets") as cur:
+        total = (await cur.fetchone())[0]
+
+    # By category
+    async with _db.execute(
+        "SELECT category, COUNT(*) as cnt FROM processed_tickets GROUP BY category ORDER BY cnt DESC"
+    ) as cur:
+        by_category = [CategoryCount(category=r[0] or "Unknown", count=r[1]) for r in await cur.fetchall()]
+
+    # By priority
+    async with _db.execute(
+        "SELECT priority, COUNT(*) as cnt FROM processed_tickets GROUP BY priority ORDER BY cnt DESC"
+    ) as cur:
+        by_priority = [PriorityCount(priority=r[0] or "unknown", count=r[1]) for r in await cur.fetchall()]
+
+    # Average automation score
+    async with _db.execute(
+        "SELECT AVG(automation_score) FROM processed_tickets WHERE automation_score IS NOT NULL"
+    ) as cur:
+        row = await cur.fetchone()
+        avg_auto = round(row[0], 1) if row[0] is not None else 0.0
+
+    # Daily trend (last N days)
+    async with _db.execute(
+        "SELECT DATE(processed_at) as day, COUNT(*) as cnt "
+        "FROM processed_tickets GROUP BY day ORDER BY day DESC LIMIT ?",
+        (days,),
+    ) as cur:
+        daily_trend = [DailyTrend(date=r[0], count=r[1]) for r in await cur.fetchall()]
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="get_analytics",
+            resource=f"{days}d",
+        )
+    return AnalyticsResponse(
+        total_tickets=total,
+        by_category=by_category,
+        by_priority=by_priority,
+        avg_automation_score=avg_auto,
+        daily_trend=daily_trend,
+        period_days=days,
+    )
+
+
+# ── Audit log endpoint ───────────────────────────────────────────────────────
+
+@app.get(
+    "/audit/logs",
+    response_model=AuditLogResponse,
+    tags=["enterprise"],
+)
+async def get_audit_logs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    api_key: str = Depends(require_admin),
+) -> AuditLogResponse:
+    """
+    Return paginated audit log entries. Admin only.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    entries, total = await audit.query(_db, page=page, page_size=page_size)
+    return AuditLogResponse(entries=entries, total=total, page=page, page_size=page_size)
+
+
+# ── Export endpoint ───────────────────────────────────────────────────────────
+
+@app.get("/export/tickets", tags=["enterprise"])
+async def export_tickets(
+    format: ExportFormat = Query(default=ExportFormat.json, description="Export format"),
+    category: str | None = Query(default=None, description="Filter by category"),
+    priority: str | None = Query(default=None, description="Filter by priority"),
+    days: int = Query(default=30, ge=1, le=365, description="Export last N days"),
+    api_key: str = Depends(require_viewer),
+):
+    """
+    Export processed tickets as JSON or CSV. Requires viewer role or higher.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    query_parts = ["SELECT id, source, processed_at, category, priority, automation_score, summary FROM processed_tickets WHERE 1=1"]
+    params: list = []
+
+    if category:
+        query_parts.append("AND category = ?")
+        params.append(category)
+    if priority:
+        query_parts.append("AND priority = ?")
+        params.append(priority)
+
+    query_parts.append("ORDER BY processed_at DESC")
+    sql = " ".join(query_parts)
+
+    async with _db.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="export_tickets",
+            resource=f"{format.value},{len(rows)} rows",
+        )
+
+    if format == ExportFormat.csv:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["id", "source", "processed_at", "category", "priority", "automation_score", "summary"])
+        for row in rows:
+            writer.writerow(row)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=tickets.csv"},
+        )
+
+    # JSON format
+    data = [
+        {
+            "id": r[0],
+            "source": r[1],
+            "processed_at": r[2],
+            "category": r[3],
+            "priority": r[4],
+            "automation_score": r[5],
+            "summary": r[6],
+        }
+        for r in rows
+    ]
+    return JSONResponse(content={"tickets": data, "total": len(data)})
 
 
 @app.exception_handler(Exception)

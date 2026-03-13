@@ -40,6 +40,19 @@ class AutomationSuggestionType(str, Enum):
     none = "none"
 
 
+class Role(str, Enum):
+    """RBAC roles — higher roles inherit lower permissions."""
+    admin = "admin"
+    analyst = "analyst"
+    viewer = "viewer"
+
+
+class SLAStatus(str, Enum):
+    within = "within"
+    at_risk = "at_risk"
+    breached = "breached"
+
+
 # ── Inbound ticket payload ────────────────────────────────────────────────────
 
 class RawTicket(BaseModel):
@@ -103,6 +116,15 @@ class RootCauseHypothesis(BaseModel):
     )
 
 
+class SLAInfo(BaseModel):
+    """SLA status for a ticket based on its priority."""
+    response_target_minutes: int = Field(default=0, description="Target response time in minutes")
+    resolution_target_minutes: int = Field(default=0, description="Target resolution time in minutes")
+    status: SLAStatus = Field(default=SLAStatus.within)
+    elapsed_minutes: float = Field(default=0.0, description="Minutes since ticket creation")
+    breach_risk: float = Field(ge=0.0, le=1.0, default=0.0, description="0.0=safe, 1.0=breached")
+
+
 class EnrichedTicket(BaseModel):
     """Full enrichment result returned to the caller."""
 
@@ -115,6 +137,7 @@ class EnrichedTicket(BaseModel):
     automation: AutomationOpportunity
     kb_articles: list[KBArticle] = Field(default_factory=list, max_length=3)
     root_cause: RootCauseHypothesis
+    sla: SLAInfo = Field(default_factory=SLAInfo, description="SLA tracking information")
     processed_at: datetime = Field(default_factory=_utcnow)
     processing_time_ms: float = Field(default=0.0)
 
@@ -129,6 +152,20 @@ class AnalyseRequest(BaseModel):
         default=True,
         description="Set false to skip (slower) DBSCAN clustering step",
     )
+
+
+class BulkAnalyseRequest(BaseModel):
+    """POST /analyse/bulk — analyse multiple tickets in a single call."""
+
+    tickets: list[RawTicket] = Field(..., min_length=1, max_length=50)
+    include_automation_detection: bool = Field(default=True)
+
+
+class BulkAnalyseResponse(BaseModel):
+    success: bool = True
+    data: list[EnrichedTicket]
+    total: int
+    failed: int = 0
 
 
 class AnalyseResponse(BaseModel):
@@ -153,3 +190,59 @@ class ErrorResponse(BaseModel):
     success: bool = False
     error: str
     detail: str = ""
+
+
+# ── Analytics models ──────────────────────────────────────────────────────────
+
+class CategoryCount(BaseModel):
+    category: str
+    count: int
+
+
+class PriorityCount(BaseModel):
+    priority: str
+    count: int
+
+
+class DailyTrend(BaseModel):
+    date: str
+    count: int
+
+
+class AnalyticsResponse(BaseModel):
+    """GET /analytics — ticket statistics and trends."""
+    total_tickets: int = 0
+    by_category: list[CategoryCount] = Field(default_factory=list)
+    by_priority: list[PriorityCount] = Field(default_factory=list)
+    avg_automation_score: float = 0.0
+    daily_trend: list[DailyTrend] = Field(default_factory=list)
+    period_days: int = 30
+
+
+# ── Audit log models ─────────────────────────────────────────────────────────
+
+class AuditEntry(BaseModel):
+    """Single audit log record."""
+    id: int
+    timestamp: datetime
+    api_key_hash: str = Field(description="SHA-256 prefix of the API key used")
+    role: Role
+    action: str
+    resource: str
+    status_code: int
+    detail: str = ""
+
+
+class AuditLogResponse(BaseModel):
+    """GET /audit/logs — paginated audit entries."""
+    entries: list[AuditEntry]
+    total: int
+    page: int
+    page_size: int
+
+
+# ── Export models ─────────────────────────────────────────────────────────────
+
+class ExportFormat(str, Enum):
+    json = "json"
+    csv = "csv"

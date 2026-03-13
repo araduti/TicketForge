@@ -21,6 +21,23 @@ class Settings(BaseSettings):
         default=["changeme"],
         description="Comma-separated list of valid API keys (set via API_KEYS env var)",
     )
+    api_key_roles: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "JSON mapping of API key to role (admin/analyst/viewer). "
+            "Keys not listed default to 'analyst'. Set via API_KEY_ROLES env var."
+        ),
+    )
+
+    # ── SLA targets (minutes) ─────────────────────────────────────────────────
+    sla_response_critical: int = Field(default=15, description="Response SLA for critical (minutes)")
+    sla_response_high: int = Field(default=60, description="Response SLA for high (minutes)")
+    sla_response_medium: int = Field(default=240, description="Response SLA for medium (minutes)")
+    sla_response_low: int = Field(default=480, description="Response SLA for low (minutes)")
+    sla_resolution_critical: int = Field(default=240, description="Resolution SLA for critical (minutes)")
+    sla_resolution_high: int = Field(default=480, description="Resolution SLA for high (minutes)")
+    sla_resolution_medium: int = Field(default=1440, description="Resolution SLA for medium (minutes)")
+    sla_resolution_low: int = Field(default=2880, description="Resolution SLA for low (minutes)")
 
     # ── Ollama / LLM ──────────────────────────────────────────────────────────
     ollama_base_url: str = Field(
@@ -130,6 +147,17 @@ class Settings(BaseSettings):
     def _parse_api_keys(cls, v: object) -> list[str]:
         if isinstance(v, str):
             return [k.strip() for k in v.split(",") if k.strip()]
+        return v  # type: ignore[return-value]
+
+    @field_validator("api_key_roles", mode="before")
+    @classmethod
+    def _parse_api_key_roles(cls, v: object) -> dict[str, str]:
+        if isinstance(v, str):
+            import json  # noqa: PLC0415
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return {}
         return v  # type: ignore[return-value]
 
 
