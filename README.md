@@ -9,6 +9,19 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 
 ---
 
+## Enterprise features
+
+| Feature | Description |
+|---|---|
+| **Role-Based Access Control** | API keys mapped to admin / analyst / viewer roles with endpoint-level authorisation |
+| **Audit Logging** | Every API action is recorded with user, role, timestamp, and result for compliance |
+| **Bulk Ticket Analysis** | Analyse up to 50 tickets in a single `POST /analyse/bulk` call |
+| **Analytics Dashboard** | `GET /analytics` returns ticket counts by category, priority, daily trends, and avg automation score |
+| **SLA Tracking** | Configurable response/resolution targets per priority level with breach detection |
+| **Data Export** | `GET /export/tickets` in JSON or CSV format with category/priority filters |
+
+---
+
 ## Architecture
 
 ```
@@ -57,15 +70,17 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 
 | File | Role |
 |---|---|
-| `main.py` | FastAPI app, routes, auth, rate limiting, lifecycle |
+| `main.py` | FastAPI app, routes, auth, RBAC, rate limiting, lifecycle |
 | `config.py` | Pydantic-settings: all env-var config in one place |
 | `models.py` | Pydantic request / response schemas |
 | `ticket_processor.py` | Core pipeline: prompt → Ollama → structured JSON |
 | `automation_detector.py` | sentence-transformers + DBSCAN clustering |
 | `prompts.py` | All LLM prompt templates |
+| `audit.py` | Audit logging service (compliance trail) |
 | `connectors/servicenow.py` | ServiceNow Table API client |
 | `connectors/jira.py` | Jira Cloud / Server REST API client |
 | `connectors/zendesk.py` | Zendesk Support API v2 client |
+| `tests/` | pytest test suite for enterprise features |
 
 ---
 
@@ -78,6 +93,10 @@ TicketForge/
 │   ├── jira.py
 │   ├── servicenow.py
 │   └── zendesk.py
+├── tests/
+│   ├── __init__.py
+│   └── test_enterprise_features.py
+├── audit.py
 ├── automation_detector.py
 ├── config.py
 ├── docker-compose.yml
@@ -230,6 +249,76 @@ curl -s -X POST http://localhost:8000/webhook/servicenow \
 curl http://localhost:8000/metrics
 ```
 
+### Bulk analysis (up to 50 tickets)
+
+```bash
+curl -s -X POST http://localhost:8000/analyse/bulk \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: my-super-secret-key" \
+  -d '{
+    "tickets": [
+      {"id": "T1", "title": "VPN not working", "description": "Error 800 on connect"},
+      {"id": "T2", "title": "Outlook crash", "description": "Crashes on startup after update"}
+    ]
+  }' | jq .
+```
+
+### Analytics dashboard
+
+```bash
+curl -s http://localhost:8000/analytics?days=30 \
+  -H "X-Api-Key: my-super-secret-key" | jq .
+```
+
+### Export tickets as CSV
+
+```bash
+curl -s "http://localhost:8000/export/tickets?format=csv&priority=high" \
+  -H "X-Api-Key: my-super-secret-key" -o tickets.csv
+```
+
+### Audit logs (admin only)
+
+```bash
+curl -s http://localhost:8000/audit/logs?page=1&page_size=20 \
+  -H "X-Api-Key: my-admin-key" | jq .
+```
+
+---
+
+## RBAC setup
+
+API keys are mapped to roles via the `API_KEY_ROLES` environment variable (JSON):
+
+```bash
+API_KEYS=admin-key-123,analyst-key-456,viewer-key-789
+API_KEY_ROLES='{"admin-key-123":"admin","analyst-key-456":"analyst","viewer-key-789":"viewer"}'
+```
+
+| Role | Permissions |
+|---|---|
+| **admin** | Full access: analyse, bulk, webhooks, analytics, audit logs, export |
+| **analyst** | Analyse tickets (single & bulk), ingest webhooks, view analytics, export |
+| **viewer** | Read-only: view tickets, analytics, export |
+
+Keys not listed in `API_KEY_ROLES` default to `analyst`.
+
+---
+
+## SLA targets
+
+Configurable per priority level via environment variables (values in minutes):
+
+| Priority | Response target | Resolution target | Env vars |
+|---|---|---|---|
+| Critical | 15 min | 4 hours | `SLA_RESPONSE_CRITICAL`, `SLA_RESOLUTION_CRITICAL` |
+| High | 1 hour | 8 hours | `SLA_RESPONSE_HIGH`, `SLA_RESOLUTION_HIGH` |
+| Medium | 4 hours | 24 hours | `SLA_RESPONSE_MEDIUM`, `SLA_RESOLUTION_MEDIUM` |
+| Low | 8 hours | 48 hours | `SLA_RESPONSE_LOW`, `SLA_RESOLUTION_LOW` |
+
+Every enriched ticket includes an `sla` object with status (`within`, `at_risk`, `breached`),
+elapsed time, and breach risk score (0.0–1.0).
+
 ---
 
 ## Configuration reference
@@ -239,6 +328,7 @@ All settings are read from environment variables (or a `.env` file):
 | Variable | Default | Description |
 |---|---|---|
 | `API_KEYS` | `changeme` | Comma-separated list of valid API keys |
+| `API_KEY_ROLES` | `{}` | JSON mapping of API key → role (admin/analyst/viewer) |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama service URL |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Model to use for analysis |
 | `OLLAMA_TIMEOUT` | `120` | Seconds before LLM call times out |
@@ -252,6 +342,14 @@ All settings are read from environment variables (or a `.env` file):
 | `JIRA_BASE_URL` | _(empty)_ | e.g. `https://mycompany.atlassian.net` |
 | `ZENDESK_SUBDOMAIN` | _(empty)_ | e.g. `mycompany` |
 | `OUTBOUND_WEBHOOK_URL` | _(empty)_ | POST enriched JSON here (Slack, Teams, …) |
+| `SLA_RESPONSE_CRITICAL` | `15` | Response SLA for critical tickets (minutes) |
+| `SLA_RESPONSE_HIGH` | `60` | Response SLA for high tickets (minutes) |
+| `SLA_RESPONSE_MEDIUM` | `240` | Response SLA for medium tickets (minutes) |
+| `SLA_RESPONSE_LOW` | `480` | Response SLA for low tickets (minutes) |
+| `SLA_RESOLUTION_CRITICAL` | `240` | Resolution SLA for critical tickets (minutes) |
+| `SLA_RESOLUTION_HIGH` | `480` | Resolution SLA for high tickets (minutes) |
+| `SLA_RESOLUTION_MEDIUM` | `1440` | Resolution SLA for medium tickets (minutes) |
+| `SLA_RESOLUTION_LOW` | `2880` | Resolution SLA for low tickets (minutes) |
 | `LOG_LEVEL` | `INFO` | Structured log verbosity |
 
 ---

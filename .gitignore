@@ -34,3 +34,7 @@ ENV/
 *.swo
 .idea/
 .vscode/
+
+# Test artifacts
+.pytest_cache/
+test_ticketforge.db
