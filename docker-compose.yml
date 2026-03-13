@@ -47,7 +47,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Security — CHANGE THIS before deploying
+      # ⚠️  SECURITY: Change this before deploying — use a long random string.
+      # e.g.  API_KEYS=$(openssl rand -hex 32)
       API_KEYS: "changeme"
 
       # LLM

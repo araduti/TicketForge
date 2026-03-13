@@ -5,6 +5,7 @@ assembles the final EnrichedTicket result.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -72,8 +73,6 @@ class TicketProcessor:
         ticket_text = f"{ticket.title}\n{ticket.description}".strip()
 
         # Run LLM analysis and optionally automation detection concurrently
-        import asyncio  # noqa: PLC0415
-
         if include_automation:
             # Feed the ticket into history *before* detect so it may join its own cluster
             self._detector.add_to_history(ticket_text, ticket.created_at)
@@ -109,11 +108,12 @@ class TicketProcessor:
         reraise=True,
     )
     async def _analyse_with_llm(self, ticket: RawTicket) -> dict[str, Any]:
+        max_desc_chars = self._settings.llm_description_max_chars
         prompt = ANALYSE_USER_PROMPT.format(
             ticket_id=ticket.id,
             source=ticket.source.value,
             title=ticket.title,
-            description=ticket.description[:3000],  # cap to avoid token overflow
+            description=ticket.description[:max_desc_chars],  # configurable cap (avoids token overflow)
             reporter=ticket.reporter,
             tags=", ".join(ticket.tags),
         )

@@ -69,6 +69,13 @@ class Settings(BaseSettings):
         default=168,
         description="Rolling window (hours) of tickets fed into clustering (default 7 days)",
     )
+    llm_description_max_chars: int = Field(
+        default=3000,
+        description=(
+            "Maximum characters of ticket description sent to the LLM. "
+            "Increase if critical info is routinely truncated (increases token usage)."
+        ),
+    )
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
     rate_limit_per_minute: int = Field(

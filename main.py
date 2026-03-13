@@ -8,10 +8,12 @@ Or via Docker Compose (see docker-compose.yml).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import AsyncGenerator
 
 import httpx
@@ -33,10 +35,17 @@ from connectors.zendesk import ZendeskConnector
 from models import (
     AnalyseRequest,
     AnalyseResponse,
+    AutomationOpportunity,
+    AutomationSuggestionType,
+    CategoryResult,
     EnrichedTicket,
     ErrorResponse,
     HealthResponse,
+    Priority,
+    PriorityResult,
     RawTicket,
+    RootCauseHypothesis,
+    RoutingResult,
     TicketSource,
     WebhookIngest,
 )
@@ -213,7 +222,6 @@ async def ingest_webhook(
 
     # Fire-and-forget outbound webhook if configured
     if settings.outbound_webhook_url:
-        import asyncio  # noqa: PLC0415
         asyncio.create_task(_send_outbound_webhook(enriched))
 
     return AnalyseResponse(data=enriched)
@@ -240,17 +248,6 @@ async def get_cached_ticket(
     if row is None:
         raise HTTPException(status_code=404, detail="Ticket not found in cache")
     # Return a minimal EnrichedTicket reconstructed from the cache
-    from datetime import datetime  # noqa: PLC0415
-    from models import (  # noqa: PLC0415
-        AutomationOpportunity,
-        AutomationSuggestionType,
-        CategoryResult,
-        Priority,
-        PriorityResult,
-        RootCauseHypothesis,
-        RoutingResult,
-        TicketSource,
-    )
     return EnrichedTicket(
         ticket_id=row[0],
         source=TicketSource(row[1]),

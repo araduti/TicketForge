@@ -58,8 +58,7 @@ class ServiceNowConnector:
             "sysparm_display_value": "true",
         }
         async with httpx.AsyncClient(headers=self._headers, timeout=self._timeout) as client:
-            resp = client.get(url, params=params)  # type: ignore[assignment]
-            response = await resp if hasattr(resp, "__await__") else resp  # type: ignore[misc]
+            response = await client.get(url, params=params)
         log.debug("servicenow.get_incident", sys_id=sys_id, status=response.status_code)
         response.raise_for_status()
         return self._parse_incident(response.json()["result"])
