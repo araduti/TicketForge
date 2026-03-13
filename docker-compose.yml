@@ -1,0 +1,93 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TicketForge — Docker Compose
+# Runs:  app (FastAPI)  +  ollama (LLM inference)
+#
+# Quick start:
+#   docker compose up -d
+#   docker compose exec ollama ollama pull llama3.1:8b
+#   curl http://localhost:8000/health
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Ollama LLM runtime ──────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ticketforge_ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"       # Expose for debugging; remove in production
+    # Uncomment the next two lines if you have an NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── TicketForge FastAPI app ─────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ticketforge_app
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Security — CHANGE THIS before deploying
+      API_KEYS: "changeme"
+
+      # LLM
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OLLAMA_MODEL: "llama3.1:8b"
+      OLLAMA_TIMEOUT: "120"
+
+      # Database (SQLite inside container)
+      DATABASE_URL: "sqlite+aiosqlite:///./ticketforge.db"
+
+      # ── Source connectors (fill in as needed) ────────────────────────────
+      # ServiceNow
+      # SERVICENOW_INSTANCE: "mycompany.service-now.com"
+      # SERVICENOW_USERNAME: "svc_ticketforge"
+      # SERVICENOW_PASSWORD: "secret"
+
+      # Jira Cloud
+      # JIRA_BASE_URL: "https://mycompany.atlassian.net"
+      # JIRA_USER_EMAIL: "bot@mycompany.com"
+      # JIRA_API_TOKEN: "your-jira-api-token"
+
+      # Zendesk
+      # ZENDESK_SUBDOMAIN: "mycompany"
+      # ZENDESK_USER_EMAIL: "bot@mycompany.com"
+      # ZENDESK_API_TOKEN: "your-zendesk-api-token"
+
+      # Outbound webhook (optional)
+      # OUTBOUND_WEBHOOK_URL: "https://hooks.slack.com/services/xxx"
+      # OUTBOUND_WEBHOOK_SECRET: "hmac-secret"
+
+      LOG_LEVEL: "INFO"
+    volumes:
+      - app_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  ollama_data:
+  app_data:
