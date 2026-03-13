@@ -353,8 +353,10 @@ class TestModels:
 
     def test_bulk_analyse_request_validation(self):
         """BulkAnalyseRequest rejects more than 50 tickets."""
+        from pydantic import ValidationError
+
         tickets = [{"id": f"T{i}", "title": f"Test {i}"} for i in range(51)]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             BulkAnalyseRequest(tickets=tickets)
 
     def test_enriched_ticket_has_sla_field(self):

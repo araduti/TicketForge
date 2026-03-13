@@ -546,18 +546,21 @@ async def export_tickets(
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not ready")
 
-    query_parts = ["SELECT id, source, processed_at, category, priority, automation_score, summary FROM processed_tickets WHERE 1=1"]
+    base = "SELECT id, source, processed_at, category, priority, automation_score, summary FROM processed_tickets"
+    conditions: list[str] = []
     params: list = []
 
     if category:
-        query_parts.append("AND category = ?")
+        conditions.append("category = ?")
         params.append(category)
     if priority:
-        query_parts.append("AND priority = ?")
+        conditions.append("priority = ?")
         params.append(priority)
 
-    query_parts.append("ORDER BY processed_at DESC")
-    sql = " ".join(query_parts)
+    sql = base
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY processed_at DESC"
 
     async with _db.execute(sql, params) as cur:
         rows = await cur.fetchall()

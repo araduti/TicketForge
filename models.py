@@ -122,7 +122,7 @@ class SLAInfo(BaseModel):
     resolution_target_minutes: int = Field(default=0, description="Target resolution time in minutes")
     status: SLAStatus = Field(default=SLAStatus.within)
     elapsed_minutes: float = Field(default=0.0, description="Minutes since ticket creation")
-    breach_risk: float = Field(ge=0.0, le=1.0, default=0.0, description="0.0=safe, 1.0=breached")
+    breach_risk: float = Field(ge=0.0, le=1.0, default=0.0, description="Risk ratio: <0.8=within, >=0.8=at_risk, >=1.0=breached")
 
 
 class EnrichedTicket(BaseModel):
