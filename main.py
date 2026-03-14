@@ -40,6 +40,9 @@ from models import (
     AnalyseResponse,
     AnalyticsResponse,
     AuditLogResponse,
+    AutoResolveRequest,
+    AutoResolveResponse,
+    AutoResolveResult,
     AutomationOpportunity,
     AutomationSuggestionType,
     BulkAnalyseRequest,
@@ -60,6 +63,7 @@ from models import (
     EmailIngestRequest,
     EnrichedTicket,
     ErrorResponse,
+    EscalationStatusResponse,
     ExportFormat,
     HealthResponse,
     KBArticleCreate,
@@ -72,6 +76,7 @@ from models import (
     KBSearchResult,
     MonitoringResponse,
     MultiAgentStatusResponse,
+    OutboundWebhookEvent,
     PluginInfo,
     PluginListResponse,
     PortalTicketResponse,
@@ -94,12 +99,15 @@ from models import (
     TicketStatus,
     TicketStatusUpdate,
     VectorStoreStatusResponse,
+    WebhookEventListResponse,
+    WebhookEventType,
     WebhookIngest,
     WebSocketEvent,
 )
 from notifications import send_notifications
 from ticket_processor import TicketProcessor
 from vector_store import VectorStore, create_vector_store
+from webhook_events import send_webhook_event
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 structlog.configure(
@@ -411,6 +419,24 @@ async def analyse_ticket(
             },
         )))
 
+    # Fire-and-forget structured webhook event (Zapier/Make/n8n)
+    if settings.webhook_events_enabled:
+        asyncio.create_task(send_webhook_event(
+            WebhookEventType.ticket_created,
+            enriched.ticket_id,
+            {
+                "category": enriched.category.category,
+                "priority": enriched.priority.priority.value,
+                "sentiment": enriched.sentiment.sentiment.value,
+                "sla_status": enriched.sla.status.value,
+                "summary": enriched.summary,
+            },
+            settings,
+        ))
+
+    # Auto-escalate to PagerDuty/OpsGenie for critical tickets or SLA breaches
+    asyncio.create_task(_auto_escalate(enriched))
+
     if _db:
         await audit.record(
             _db,
@@ -560,6 +586,16 @@ async def update_ticket_status(
             ticket_id=ticket_id,
             data={"new_status": body.status.value},
         )))
+
+    # Fire-and-forget structured webhook event (Zapier/Make/n8n)
+    if settings.webhook_events_enabled:
+        event_type = WebhookEventType.ticket_resolved if body.status == TicketStatus.resolved else WebhookEventType.ticket_updated
+        asyncio.create_task(send_webhook_event(
+            event_type,
+            ticket_id,
+            {"new_status": body.status.value},
+            settings,
+        ))
 
     await audit.record(
         _db,
@@ -1743,6 +1779,15 @@ async def submit_csat(
         submitted_at=datetime.fromisoformat(r[5]),
     )
 
+    # Fire-and-forget structured webhook event (Zapier/Make/n8n)
+    if settings.webhook_events_enabled:
+        asyncio.create_task(send_webhook_event(
+            WebhookEventType.csat_submitted,
+            ticket_id,
+            {"rating": body.rating, "comment": body.comment},
+            settings,
+        ))
+
     await audit.record(
         _db,
         api_key=api_key,
@@ -1929,6 +1974,232 @@ async def vector_store_status(
     )
 
 
+# ── Auto-resolution endpoint ─────────────────────────────────────────────────
+
+@app.post(
+    "/tickets/{ticket_id}/auto-resolve",
+    response_model=AutoResolveResponse,
+    tags=["auto-resolution"],
+)
+async def auto_resolve_ticket(
+    ticket_id: str,
+    body: AutoResolveRequest | None = None,
+    api_key: str = Depends(require_analyst),
+) -> AutoResolveResponse:
+    """
+    Attempt AI-powered auto-resolution for a previously analysed ticket.
+
+    Searches the knowledge base for matching articles, and if confidence exceeds
+    the configured threshold, generates a resolution response and marks the ticket
+    as resolved. Requires analyst or admin role.
+    """
+    if not settings.auto_resolution_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Auto-resolution is not enabled. Set AUTO_RESOLUTION_ENABLED=true.",
+        )
+
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Look up the cached ticket
+    async with _db.execute(
+        "SELECT id, source, category, priority, automation_score, summary, "
+        "sentiment, detected_language, ticket_status "
+        "FROM processed_tickets WHERE id = ?",
+        (ticket_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ticket not found in cache")
+
+    # Search KB for matching articles
+    kb_results: list[KBSearchResult] = []
+    if _vector_store is not None:
+        summary_text = row[5] or ""
+        if summary_text:
+            processor = _get_processor()
+            try:
+                query_embedding = processor.embedding_model.encode([summary_text])[0]
+                all_ids = await _vector_store.list_ids(prefix="kb-")
+                if all_ids:
+                    all_embeddings = []
+                    for vid in all_ids:
+                        emb = await _vector_store.get(vid)
+                        if emb is not None:
+                            all_embeddings.append((vid, emb))
+
+                    if all_embeddings:
+                        from sklearn.metrics.pairwise import cosine_similarity  # noqa: PLC0415
+                        import numpy as np  # noqa: PLC0415
+
+                        matrix = np.array([e for _, e in all_embeddings])
+                        sims = cosine_similarity([query_embedding], matrix)[0]
+
+                        for idx in np.argsort(sims)[::-1][:5]:
+                            score = float(sims[idx])
+                            if score < 0.3:
+                                break
+                            vec_id = all_embeddings[idx][0]
+                            article_id = vec_id.replace("kb-", "")
+                            # Fetch article details from DB
+                            async with _db.execute(
+                                "SELECT id, title, category, content FROM kb_articles WHERE id = ?",
+                                (article_id,),
+                            ) as cur:
+                                art_row = await cur.fetchone()
+                            if art_row:
+                                kb_results.append(KBSearchResult(
+                                    article_id=art_row[0],
+                                    title=art_row[1],
+                                    category=art_row[2] or "",
+                                    relevance_score=round(score, 3),
+                                    snippet=(art_row[3] or "")[:200],
+                                ))
+            except Exception as e:  # noqa: BLE001
+                log.warning("auto_resolve.kb_search_failed", ticket_id=ticket_id, error_type=type(e).__name__, error=str(e))
+
+    # Use LLM to determine if the ticket can be auto-resolved
+    from prompts import AUTO_RESOLVE_PROMPT, SYSTEM_PROMPT  # noqa: PLC0415
+
+    kb_text = "\n".join(
+        f"- [{r.title}] (relevance: {r.relevance_score:.2f}): {r.snippet}"
+        for r in kb_results
+    ) if kb_results else "No matching KB articles found."
+
+    prompt = AUTO_RESOLVE_PROMPT.format(
+        ticket_id=ticket_id,
+        title=row[5] or "",
+        category=row[2] or "",
+        priority=row[3] or "medium",
+        sentiment=row[6] or "neutral",
+        summary=row[5] or "",
+        kb_articles=kb_text,
+    )
+
+    resolved = False
+    resolution_summary = ""
+    response_draft = ""
+    confidence = 0.0
+
+    try:
+        processor = _get_processor()
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        raw_content = await processor.chat_with_llm(messages, temperature=0.2, max_tokens=1024)
+        from ticket_processor import _parse_llm_json  # noqa: PLC0415
+        llm_data = _parse_llm_json(raw_content)
+
+        confidence = float(llm_data.get("confidence", 0.0))
+        can_resolve = llm_data.get("can_resolve", False)
+
+        if can_resolve and confidence >= settings.auto_resolution_confidence_threshold:
+            resolved = True
+            resolution_summary = llm_data.get("resolution_summary", "")
+            response_draft = llm_data.get("response_draft", "")
+
+            # Update ticket status to resolved
+            await _db.execute(
+                "UPDATE processed_tickets SET ticket_status = ? WHERE id = ?",
+                (TicketStatus.resolved.value, ticket_id),
+            )
+            await _db.commit()
+
+            # Send webhook event if enabled
+            if settings.webhook_events_enabled:
+                asyncio.create_task(send_webhook_event(
+                    WebhookEventType.ticket_auto_resolved,
+                    ticket_id,
+                    {
+                        "resolution_summary": resolution_summary,
+                        "confidence": confidence,
+                        "kb_articles": [r.model_dump() for r in kb_results],
+                    },
+                    settings,
+                ))
+
+            # Broadcast WebSocket event
+            if settings.websocket_notifications_enabled:
+                asyncio.create_task(ws_manager.broadcast(WebSocketEvent(
+                    event_type="ticket_auto_resolved",
+                    ticket_id=ticket_id,
+                    data={
+                        "resolution_summary": resolution_summary,
+                        "confidence": confidence,
+                    },
+                )))
+        else:
+            resolution_summary = llm_data.get("resolution_summary", "Insufficient confidence for auto-resolution")
+    except Exception as e:  # noqa: BLE001
+        log.warning("auto_resolve.llm_failed", ticket_id=ticket_id, error_type=type(e).__name__, error=str(e))
+        resolution_summary = "LLM processing failed"
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="auto_resolve",
+            resource=ticket_id,
+        )
+
+    return AutoResolveResponse(
+        data=AutoResolveResult(
+            ticket_id=ticket_id,
+            resolved=resolved,
+            resolution_summary=resolution_summary,
+            matched_kb_articles=kb_results,
+            confidence=confidence,
+            response_draft=response_draft,
+        )
+    )
+
+
+# ── Webhook events endpoint (Zapier / Make / n8n) ────────────────────────────
+
+@app.get(
+    "/webhooks/events",
+    response_model=WebhookEventListResponse,
+    tags=["webhooks"],
+)
+async def list_webhook_events(
+    api_key: str = Depends(require_viewer),
+) -> WebhookEventListResponse:
+    """
+    List supported outbound webhook event types for integration with
+    Zapier, Make (Integromat), n8n, and other automation platforms.
+    """
+    return WebhookEventListResponse(
+        supported_events=[e.value for e in WebhookEventType],
+        webhook_url_configured=bool(settings.outbound_webhook_url),
+    )
+
+
+# ── Escalation status endpoint (PagerDuty / OpsGenie) ────────────────────────
+
+@app.get(
+    "/escalation/status",
+    response_model=EscalationStatusResponse,
+    tags=["escalation"],
+)
+async def escalation_status(
+    api_key: str = Depends(require_viewer),
+) -> EscalationStatusResponse:
+    """
+    Return the current escalation integration status for PagerDuty and OpsGenie.
+    """
+    return EscalationStatusResponse(
+        pagerduty_configured=bool(settings.pagerduty_routing_key),
+        opsgenie_configured=bool(settings.opsgenie_api_key),
+        auto_escalate_enabled=(
+            settings.pagerduty_auto_escalate or settings.opsgenie_auto_escalate
+        ),
+    )
+
+
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
 
 @app.get("/dashboard", response_class=HTMLResponse, tags=["ui"])
@@ -2032,6 +2303,29 @@ async def _send_outbound_webhook(enriched: EnrichedTicket) -> None:
         log.info("outbound_webhook.sent", status=r.status_code, ticket_id=enriched.ticket_id)
     except Exception as e:  # noqa: BLE001
         log.error("outbound_webhook.failed", ticket_id=enriched.ticket_id, error=str(e))
+
+
+async def _auto_escalate(enriched: EnrichedTicket) -> None:
+    """Auto-escalate to PagerDuty/OpsGenie if configured and criteria are met."""
+    # PagerDuty auto-escalation
+    if settings.pagerduty_routing_key and settings.pagerduty_auto_escalate:
+        from connectors.pagerduty import PagerDutyConnector  # noqa: PLC0415
+        if PagerDutyConnector.should_escalate(enriched):
+            try:
+                connector = PagerDutyConnector(settings)
+                await connector.create_incident(enriched)
+            except Exception as e:  # noqa: BLE001
+                log.error("auto_escalate.pagerduty_failed", ticket_id=enriched.ticket_id, error=str(e))
+
+    # OpsGenie auto-escalation
+    if settings.opsgenie_api_key and settings.opsgenie_auto_escalate:
+        from connectors.opsgenie import OpsGenieConnector  # noqa: PLC0415
+        if OpsGenieConnector.should_escalate(enriched):
+            try:
+                connector = OpsGenieConnector(settings)
+                await connector.create_alert(enriched)
+            except Exception as e:  # noqa: BLE001
+                log.error("auto_escalate.opsgenie_failed", ticket_id=enriched.ticket_id, error=str(e))
 
 
 # ── Dashboard HTML template ──────────────────────────────────────────────────

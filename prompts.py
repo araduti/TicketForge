@@ -187,3 +187,37 @@ def get_i18n_response_prompt(language_code: str) -> str:
         return ""
     name = get_language_name(language_code)
     return I18N_RESPONSE_LANGUAGE_INSTRUCTION.format(language_name=name, language_code=language_code)
+
+
+# ── Auto-resolution prompt ───────────────────────────────────────────────────
+
+AUTO_RESOLVE_PROMPT = """\
+You are an AI auto-resolution engine. Based on the ticket information and matching knowledge base
+articles below, determine whether this ticket can be automatically resolved.
+
+Ticket info:
+- ID: {ticket_id}
+- Title: {title}
+- Category: {category}
+- Priority: {priority}
+- Sentiment: {sentiment}
+- Summary: {summary}
+
+Matching KB articles:
+{kb_articles}
+
+Return a JSON object with this exact schema:
+{{
+  "can_resolve": <true if the KB articles provide a clear solution, false otherwise>,
+  "confidence": <float 0.0–1.0, how confident you are in the resolution>,
+  "resolution_summary": "<one-sentence summary of the resolution>",
+  "response_draft": "<professional response to the user explaining the solution, reference KB articles>"
+}}
+
+Guidelines:
+- Only set can_resolve=true if the KB articles directly address the user's issue
+- The confidence should reflect how well the KB articles match the ticket
+- For frustrated users, use an empathetic tone in the response draft
+- Include specific steps or links from KB articles
+- If no KB articles match well, set can_resolve=false with confidence=0.0
+"""

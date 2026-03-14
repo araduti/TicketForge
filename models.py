@@ -598,3 +598,76 @@ class VectorStoreStatusResponse(BaseModel):
     backend: str = Field(default="in_memory", description="Active backend: in_memory or persistent")
     total_vectors: int = Field(default=0, description="Number of stored vectors")
 
+
+# ── Auto-resolution models ───────────────────────────────────────────────────
+
+class AutoResolveRequest(BaseModel):
+    """POST /tickets/{ticket_id}/auto-resolve — attempt AI-powered auto-resolution."""
+
+    additional_context: str = Field(default="", max_length=5000, description="Optional extra context for resolution")
+
+
+class AutoResolveResult(BaseModel):
+    """Result of an AI auto-resolution attempt."""
+
+    ticket_id: str = Field(..., description="Ticket that was auto-resolved")
+    resolved: bool = Field(default=False, description="Whether the ticket was successfully auto-resolved")
+    resolution_summary: str = Field(default="", description="Summary of the resolution applied")
+    matched_kb_articles: list[KBSearchResult] = Field(default_factory=list, description="KB articles used for resolution")
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0, description="Confidence in the auto-resolution")
+    response_draft: str = Field(default="", description="Draft response sent to the ticket reporter")
+
+
+class AutoResolveResponse(BaseModel):
+    success: bool = True
+    data: AutoResolveResult
+
+
+# ── Webhook event models (Zapier / Make / n8n) ──────────────────────────────
+
+class WebhookEventType(str, Enum):
+    """Event types for outbound structured webhook events."""
+    ticket_created = "ticket.created"
+    ticket_updated = "ticket.updated"
+    ticket_resolved = "ticket.resolved"
+    ticket_auto_resolved = "ticket.auto_resolved"
+    sla_breach = "sla.breach"
+    csat_submitted = "csat.submitted"
+
+
+class OutboundWebhookEvent(BaseModel):
+    """Structured event sent to outbound webhook endpoints (Zapier/Make/n8n compatible)."""
+
+    event: WebhookEventType = Field(..., description="Event type identifier")
+    ticket_id: str = Field(default="", description="Related ticket ID")
+    timestamp: datetime = Field(default_factory=_utcnow)
+    payload: dict[str, Any] = Field(default_factory=dict, description="Event-specific data")
+
+
+class WebhookEventListResponse(BaseModel):
+    """GET /webhooks/events — list supported webhook event types."""
+
+    success: bool = True
+    supported_events: list[str] = Field(default_factory=list, description="Supported event type strings")
+    webhook_url_configured: bool = Field(default=False, description="Whether an outbound webhook URL is set")
+
+
+# ── PagerDuty / OpsGenie escalation models ───────────────────────────────────
+
+class EscalationResult(BaseModel):
+    """Result of an escalation to PagerDuty or OpsGenie."""
+
+    provider: str = Field(..., description="Escalation provider: pagerduty or opsgenie")
+    incident_key: str = Field(default="", description="Unique incident/alert key")
+    status: str = Field(default="", description="Escalation status: created, deduplicated, error")
+    message: str = Field(default="", description="Human-readable status message")
+
+
+class EscalationStatusResponse(BaseModel):
+    """GET /escalation/status — escalation integration status."""
+
+    success: bool = True
+    pagerduty_configured: bool = Field(default=False, description="Whether PagerDuty is configured")
+    opsgenie_configured: bool = Field(default=False, description="Whether OpsGenie is configured")
+    auto_escalate_enabled: bool = Field(default=False, description="Whether auto-escalation on SLA breach is enabled")
+

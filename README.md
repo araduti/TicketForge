@@ -39,6 +39,10 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **Multi-Agent Pipeline** | Configurable Analyser → Classifier → Validator pipeline for enhanced accuracy; toggle via `MULTI_AGENT_ENABLED` |
 | **Persistent Vector Store** | Pluggable vector store with in-memory (default) and persistent SQLite-backed backends via `VECTOR_STORE_BACKEND` |
 | **PostgreSQL Support** | Full PostgreSQL async connectivity via asyncpg driver; configure via `DATABASE_URL=postgresql://...` |
+| **AI Auto-Resolution** | `POST /tickets/{id}/auto-resolve` attempts AI-powered resolution using KB matching and LLM confidence scoring |
+| **Outbound Webhook Events** | Structured webhook event payloads (Zapier/Make/n8n compatible) for ticket lifecycle events with HMAC signing |
+| **PagerDuty Escalation** | Auto-create PagerDuty incidents for critical tickets and SLA breaches via Events API v2 |
+| **OpsGenie Escalation** | Auto-create OpsGenie alerts for critical tickets and SLA breaches via Alert API |
 
 ---
 
@@ -98,10 +102,21 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | `automation_detector.py` | sentence-transformers + DBSCAN clustering |
 | `prompts.py` | All LLM prompt templates |
 | `audit.py` | Audit logging service (compliance trail) |
+| `llm_provider.py` | Pluggable LLM provider interface (Ollama / OpenAI-compatible) |
+| `notifications.py` | Slack & Teams notification module |
+| `chatbot.py` | Conversational AI chatbot manager |
+| `email_ingestion.py` | Email webhook processing (SendGrid, Mailgun, generic) |
+| `monitoring.py` | Model drift detection and monitoring |
+| `plugin_system.py` | Plugin architecture with pre/post analysis hooks |
+| `multi_agent.py` | Multi-agent pipeline (Analyser → Classifier → Validator) |
+| `vector_store.py` | Vector embeddings (in-memory & persistent SQLite) |
+| `webhook_events.py` | Outbound webhook event delivery (Zapier/Make/n8n) |
 | `connectors/servicenow.py` | ServiceNow Table API client |
 | `connectors/jira.py` | Jira Cloud / Server REST API client |
 | `connectors/zendesk.py` | Zendesk Support API v2 client |
-| `tests/` | pytest test suite for enterprise features |
+| `connectors/pagerduty.py` | PagerDuty Events API v2 connector |
+| `connectors/opsgenie.py` | OpsGenie Alert API connector |
+| `tests/` | pytest test suite (309 tests across 8 test files) |
 
 ---
 
@@ -112,21 +127,41 @@ TicketForge/
 ├── connectors/
 │   ├── __init__.py
 │   ├── jira.py
+│   ├── opsgenie.py
+│   ├── pagerduty.py
 │   ├── servicenow.py
 │   └── zendesk.py
+├── docs/
+│   └── COMPETITIVE_ANALYSIS.md
 ├── tests/
 │   ├── __init__.py
-│   └── test_enterprise_features.py
+│   ├── test_enterprise_features.py
+│   ├── test_competitive_features.py
+│   ├── test_phase2_features.py
+│   ├── test_phase2b_features.py
+│   ├── test_phase3_features.py
+│   ├── test_phase4_features.py
+│   ├── test_phase5_features.py
+│   └── test_phase6_features.py
 ├── audit.py
 ├── automation_detector.py
+├── chatbot.py
 ├── config.py
 ├── docker-compose.yml
 ├── Dockerfile
+├── email_ingestion.py
+├── llm_provider.py
 ├── main.py
 ├── models.py
+├── monitoring.py
+├── multi_agent.py
+├── notifications.py
+├── plugin_system.py
 ├── prompts.py
 ├── requirements.txt
 ├── ticket_processor.py
+├── vector_store.py
+├── webhook_events.py
 └── README.md
 ```
 
@@ -386,6 +421,29 @@ curl -s http://localhost:8000/vector-store/status \
   -H "X-Api-Key: my-key" | jq .
 ```
 
+### Auto-resolve a ticket (AI-powered)
+
+```bash
+curl -s -X POST http://localhost:8000/tickets/TICKET-001/auto-resolve \
+  -H "X-Api-Key: my-analyst-key" \
+  -H "Content-Type: application/json" \
+  -d '{"additional_context": "User tried restarting"}' | jq .
+```
+
+### List supported webhook events (Zapier/Make/n8n)
+
+```bash
+curl -s http://localhost:8000/webhooks/events \
+  -H "X-Api-Key: my-key" | jq .
+```
+
+### Check escalation status (PagerDuty/OpsGenie)
+
+```bash
+curl -s http://localhost:8000/escalation/status \
+  -H "X-Api-Key: my-key" | jq .
+```
+
 ---
 
 ## RBAC setup
@@ -475,6 +533,13 @@ All settings are read from environment variables (or a `.env` file):
 | `I18N_DEFAULT_LANGUAGE` | `en` | Default language (ISO 639-1) when no language is detected |
 | `MULTI_AGENT_ENABLED` | `false` | Enable multi-agent pipeline (Analyser → Classifier → Validator) instead of single LLM call |
 | `VECTOR_STORE_BACKEND` | `in_memory` | Vector store backend: `in_memory` (default) or `persistent` (SQLite-backed) |
+| `AUTO_RESOLUTION_ENABLED` | `false` | Enable AI-powered auto-resolution endpoint `POST /tickets/{id}/auto-resolve` |
+| `AUTO_RESOLUTION_CONFIDENCE_THRESHOLD` | `0.8` | Minimum confidence (0.0–1.0) for auto-resolution to proceed |
+| `WEBHOOK_EVENTS_ENABLED` | `false` | Enable structured webhook event delivery for Zapier/Make/n8n |
+| `PAGERDUTY_ROUTING_KEY` | _(empty)_ | PagerDuty Events API v2 routing (integration) key |
+| `PAGERDUTY_AUTO_ESCALATE` | `false` | Auto-create PagerDuty incidents for critical tickets or SLA breaches |
+| `OPSGENIE_API_KEY` | _(empty)_ | OpsGenie Alert API key |
+| `OPSGENIE_AUTO_ESCALATE` | `false` | Auto-create OpsGenie alerts for critical tickets or SLA breaches |
 
 ---
 

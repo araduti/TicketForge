@@ -23,7 +23,7 @@
 
 TicketForge occupies a **unique niche** as a lightweight, self-hosted AI enrichment layer that sits *on top of* existing ticketing systems (ServiceNow, Jira, Zendesk). Unlike full helpdesk platforms that replace your ticketing system, TicketForge **augments** them with local-LLM-powered analysis, categorization, routing, automation detection, and SLA tracking — all without sending data to external AI APIs.
 
-**Key finding:** While TicketForge's core AI analysis capabilities are competitive, there are significant gaps in areas of **user interface/dashboard**, **conversational AI (chatbots)**, **knowledge base management**, **multi-channel communication**, **notification systems**, **agent collaboration**, and **customer self-service portals** that competitors offer. Addressing the highest-impact gaps could dramatically increase adoption.
+**Key finding:** TicketForge's AI analysis capabilities are competitive with commercial platforms. With Phase 6 complete, TicketForge now offers AI-powered auto-resolution, outbound webhook events for Zapier/Make/n8n integration, and PagerDuty/OpsGenie escalation connectors — closing the remaining critical gaps in the **integration ecosystem** and **AI capabilities** categories.
 
 ---
 
@@ -111,9 +111,9 @@ These set the benchmark for enterprise expectations:
 | Local LLM (self-hosted) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Cloud LLM support | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Multi-model support | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Multi-agent orchestration | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Conversational AI / Chatbot | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| AI-powered auto-resolution | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Multi-agent orchestration | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Conversational AI / Chatbot | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| AI-powered auto-resolution | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | AI response suggestions | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | RAG / Vector search | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Integration** | | | | | | | | | |
@@ -123,8 +123,8 @@ These set the benchmark for enterprise expectations:
 | Slack integration | ✅ | ❌ | ❌ | ✅ | ✅ | 🔌 | ❌ | ❌ | ❌ |
 | MS Teams integration | ✅ | ❌ | ❌ | ✅ | ✅ | 🔌 | ❌ | ❌ | ❌ |
 | Email integration | 🟡 | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Zapier / Make / n8n | ❌ | ❌ | ❌ | ✅ | ✅ | 🔌 | ❌ | ✅ | ❌ |
-| PagerDuty / OpsGenie | ❌ | ❌ | ❌ | ✅ | ✅ | 🔌 | ❌ | ❌ | ❌ |
+| Zapier / Make / n8n | ✅ | ❌ | ❌ | ✅ | ✅ | 🔌 | ❌ | ✅ | ❌ |
+| PagerDuty / OpsGenie | ✅ | ❌ | ❌ | ✅ | ✅ | 🔌 | ❌ | ❌ | ❌ |
 | **Enterprise** | | | | | | | | | |
 | RBAC | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Audit logging | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
@@ -134,11 +134,11 @@ These set the benchmark for enterprise expectations:
 | Data export (JSON/CSV) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **User Experience** | | | | | | | | | |
 | Web dashboard / UI | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Customer self-service portal | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Customer self-service portal | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Mobile app | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Knowledge base management | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Real-time notifications | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Multi-language support | 🟡 | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Real-time notifications | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Multi-language support | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **DevOps** | | | | | | | | | |
 | Docker support | ✅ | ❌ | ❌ | N/A | N/A | ✅ | ✅ | ✅ | ✅ |
 | Self-hosted | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -311,6 +311,16 @@ These prepare TicketForge for production-scale deployments:
 | 19 | **Add PostgreSQL support** with asyncpg driver | Medium | Medium | ✅ Done |
 | 20 | **Implement multi-agent architecture** (Analyser→Classifier→Validator) | High | Medium | ✅ Done |
 | 21 | **Add persistent vector store** (SQLite-backed, with pluggable interface) | Medium | Medium | ✅ Done |
+
+### Phase 6: Integration Ecosystem & Auto-Resolution (10-12 months)
+These close the remaining competitive gaps and expand the integration ecosystem:
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 22 | **Add AI-powered auto-resolution** (`POST /tickets/{id}/auto-resolve` with KB matching and LLM) | High | High | ✅ Done |
+| 23 | **Add outbound webhook events** for Zapier/Make/n8n (structured event payloads with HMAC signing) | Medium | High | ✅ Done |
+| 24 | **Add PagerDuty connector** (Events API v2 for critical ticket escalation) | Medium | Medium | ✅ Done |
+| 25 | **Add OpsGenie connector** (Alert API for critical ticket escalation) | Medium | Medium | ✅ Done |
 
 ### Prioritization Framework
 
