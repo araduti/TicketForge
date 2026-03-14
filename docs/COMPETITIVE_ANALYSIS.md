@@ -322,6 +322,17 @@ These close the remaining competitive gaps and expand the integration ecosystem:
 | 24 | **Add PagerDuty connector** (Events API v2 for critical ticket escalation) | Medium | Medium | ✅ Done |
 | 25 | **Add OpsGenie connector** (Alert API for critical ticket escalation) | Medium | Medium | ✅ Done |
 
+### Phase 7: Operational Excellence & Advanced Automation (12-14 months)
+These add operational features that streamline agent workflows and enable advanced ticket management:
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 26 | **Add scheduled reports** (automated analytics delivery via webhook at daily/weekly/monthly frequency) | Medium | Medium | ✅ Done |
+| 27 | **Add ticket merging** (`POST /tickets/merge` to consolidate duplicates with history) | Medium | High | ✅ Done |
+| 28 | **Add custom fields** (dynamic organisation-specific metadata for tickets) | Medium | Medium | ✅ Done |
+| 29 | **Add ticket tags** (labelling system for organising and filtering tickets) | Low | Medium | ✅ Done |
+| 30 | **Add saved filters** (named query filters for quick access to ticket subsets) | Low | Medium | ✅ Done |
+
 ### Prioritization Framework
 
 ```
