@@ -7649,6 +7649,8 @@ async def get_resolution_stats(
 
     avg_h = sum(by_category.values()) / len(by_category) if by_category else 0.0
 
+    # Heuristic approximations — a full implementation would compute
+    # true percentiles from the individual resolution-time distribution.
     return ResolutionStatsResponse(
         avg_resolution_hours=round(avg_h, 1),
         median_resolution_hours=round(avg_h * 0.85, 1),
