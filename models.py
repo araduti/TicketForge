@@ -413,3 +413,95 @@ class EmailIngestRequest(BaseModel):
     in_reply_to: str = Field(default="", description="In-Reply-To header for threading")
     timestamp: datetime = Field(default_factory=_utcnow, description="Email received timestamp")
     headers: dict[str, str] = Field(default_factory=dict, description="Additional email headers")
+
+
+# ── Chatbot models ───────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    """A single message in a chatbot conversation."""
+
+    role: str = Field(..., description="Message role: 'user' or 'assistant'")
+    content: str = Field(..., min_length=1, max_length=5000, description="Message content")
+    timestamp: datetime = Field(default_factory=_utcnow)
+
+
+class ChatRequest(BaseModel):
+    """POST /chat — send a message to the TicketForge chatbot."""
+
+    session_id: str = Field(default="", description="Session ID for multi-turn conversations (auto-generated if empty)")
+    message: str = Field(..., min_length=1, max_length=5000, description="User message")
+    context: dict[str, Any] = Field(default_factory=dict, description="Optional context (e.g. ticket_id for status lookup)")
+
+
+class ChatResponse(BaseModel):
+    """Response from the chatbot."""
+
+    success: bool = True
+    session_id: str = Field(..., description="Session ID for continuing the conversation")
+    reply: str = Field(..., description="Assistant response message")
+    intent: str = Field(default="general", description="Detected intent: create_ticket, check_status, search_kb, general")
+    suggested_actions: list[str] = Field(default_factory=list, description="Suggested follow-up actions")
+    data: dict[str, Any] = Field(default_factory=dict, description="Structured data returned (e.g. ticket info, KB results)")
+
+
+# ── Model monitoring models ──────────────────────────────────────────────────
+
+class DriftMetric(BaseModel):
+    """A single drift metric for a prediction field."""
+
+    field: str = Field(..., description="Field being monitored (e.g. 'category', 'priority', 'sentiment')")
+    current_distribution: dict[str, float] = Field(default_factory=dict, description="Current distribution percentages")
+    baseline_distribution: dict[str, float] = Field(default_factory=dict, description="Baseline distribution percentages")
+    drift_score: float = Field(ge=0.0, le=1.0, default=0.0, description="Drift score 0.0=identical, 1.0=completely different")
+    is_drifting: bool = Field(default=False, description="True if drift exceeds threshold")
+
+
+class MonitoringResponse(BaseModel):
+    """GET /monitoring/drift — model prediction drift analysis."""
+
+    success: bool = True
+    metrics: list[DriftMetric] = Field(default_factory=list)
+    total_tickets_analysed: int = 0
+    baseline_period_days: int = Field(default=30, description="Baseline comparison period")
+    monitoring_period_days: int = Field(default=7, description="Recent period being monitored")
+    overall_health: str = Field(default="healthy", description="Overall model health: healthy, warning, degraded")
+
+
+# ── Plugin system models ─────────────────────────────────────────────────────
+
+class PluginInfo(BaseModel):
+    """Metadata about a registered plugin."""
+
+    name: str = Field(..., description="Unique plugin name")
+    version: str = Field(default="0.1.0", description="Plugin version")
+    description: str = Field(default="", description="Human-readable description")
+    hook: str = Field(..., description="Hook point: pre_analysis, post_analysis, custom_enrichment")
+    enabled: bool = Field(default=True, description="Whether the plugin is active")
+
+
+class PluginListResponse(BaseModel):
+    """GET /plugins — list registered plugins."""
+
+    success: bool = True
+    plugins: list[PluginInfo] = Field(default_factory=list)
+    total: int = 0
+
+
+# ── Self-service portal models ───────────────────────────────────────────────
+
+class PortalTicketSubmission(BaseModel):
+    """POST /portal/tickets — submit a ticket from the self-service portal."""
+
+    title: str = Field(..., min_length=1, max_length=2000, description="Issue title")
+    description: str = Field(default="", max_length=20000, description="Detailed issue description")
+    reporter_email: str = Field(..., min_length=1, description="Reporter email address")
+    category: str = Field(default="", description="Optional category hint from the user")
+
+
+class PortalTicketResponse(BaseModel):
+    """Response after submitting a ticket through the portal."""
+
+    success: bool = True
+    ticket_id: str = Field(..., description="Assigned ticket ID")
+    message: str = Field(default="Your ticket has been submitted successfully.", description="Confirmation message")
+    suggested_articles: list[KBSearchResult] = Field(default_factory=list, description="Relevant KB articles that may help")

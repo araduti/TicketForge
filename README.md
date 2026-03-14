@@ -27,6 +27,12 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **AI Response Suggestions** | `POST /suggest-response` generates draft agent responses for enriched tickets using the LLM |
 | **Duplicate Detection** | `POST /tickets/detect-duplicates` finds similar tickets using sentence-transformer vector similarity |
 | **Web Dashboard** | Built-in HTML dashboard at `GET /dashboard` showing tickets, analytics charts, and SLA overview |
+| **Knowledge Base** | Full CRUD API (`/kb/articles`) with semantic vector search (`POST /kb/search`) for self-service content |
+| **Email Ingestion** | `POST /ingest/email` webhook endpoint for SendGrid, Mailgun, and generic email providers |
+| **Chatbot Interface** | `POST /chat` conversational endpoint for ticket creation, status lookup, and KB search with multi-turn sessions |
+| **Self-Service Portal** | `GET /portal` HTML page for end-users to submit tickets, check status, browse KB, and chat |
+| **Model Monitoring** | `GET /monitoring/drift` detects prediction drift in category, priority, and sentiment distributions |
+| **Plugin System** | Pluggable enrichment architecture with pre/post analysis hooks and a `GET /plugins` management endpoint |
 
 ---
 
@@ -293,6 +299,43 @@ curl -s http://localhost:8000/audit/logs?page=1&page_size=20 \
   -H "X-Api-Key: my-admin-key" | jq .
 ```
 
+### Chat with the assistant
+
+```bash
+curl -s http://localhost:8000/chat \
+  -H "X-Api-Key: my-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How to reset my VPN connection?"}' | jq .
+```
+
+### Submit a ticket via the self-service portal
+
+```bash
+curl -s http://localhost:8000/portal/tickets \
+  -H "X-Api-Key: my-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Laptop won'\''t boot",
+    "description": "Black screen after pressing power button",
+    "reporter_email": "user@company.com",
+    "category": "Hardware"
+  }' | jq .
+```
+
+### Model drift monitoring (admin only)
+
+```bash
+curl -s http://localhost:8000/monitoring/drift \
+  -H "X-Api-Key: my-admin-key" | jq .
+```
+
+### List registered plugins (admin only)
+
+```bash
+curl -s http://localhost:8000/plugins \
+  -H "X-Api-Key: my-admin-key" | jq .
+```
+
 ---
 
 ## RBAC setup
@@ -306,9 +349,9 @@ API_KEY_ROLES='{"admin-key-123":"admin","analyst-key-456":"analyst","viewer-key-
 
 | Role | Permissions |
 |---|---|
-| **admin** | Full access: analyse, bulk, webhooks, analytics, audit logs, export |
-| **analyst** | Analyse tickets (single & bulk), ingest webhooks, view analytics, export |
-| **viewer** | Read-only: view tickets, analytics, export |
+| **admin** | Full access: analyse, bulk, webhooks, analytics, audit logs, export, monitoring, plugins |
+| **analyst** | Analyse tickets (single & bulk), ingest webhooks, view analytics, export, KB management |
+| **viewer** | Read-only: view tickets, analytics, export, chat, portal, KB search |
 
 Keys not listed in `API_KEY_ROLES` default to `analyst`.
 
@@ -368,6 +411,14 @@ All settings are read from environment variables (or a `.env` file):
 | `SLA_RESOLUTION_MEDIUM` | `1440` | Resolution SLA for medium tickets (minutes) |
 | `SLA_RESOLUTION_LOW` | `2880` | Resolution SLA for low tickets (minutes) |
 | `LOG_LEVEL` | `INFO` | Structured log verbosity |
+| `CHATBOT_ENABLED` | `true` | Enable the `POST /chat` chatbot endpoint |
+| `CHATBOT_MAX_HISTORY` | `20` | Maximum conversation messages kept per session |
+| `PORTAL_ENABLED` | `true` | Enable the `GET /portal` self-service endpoint |
+| `MONITORING_ENABLED` | `true` | Enable the `GET /monitoring/drift` endpoint |
+| `MONITORING_BASELINE_DAYS` | `30` | Baseline period in days for drift comparison |
+| `MONITORING_WINDOW_DAYS` | `7` | Recent monitoring window in days |
+| `DRIFT_THRESHOLD` | `0.3` | Drift score threshold (0.0–1.0) to flag as drifting |
+| `EMAIL_INGESTION_ENABLED` | `false` | Enable the `POST /ingest/email` endpoint |
 
 ---
 
