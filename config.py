@@ -415,6 +415,30 @@ class Settings(BaseSettings):
         description="Enable KB auto-generation from resolved tickets (POST /kb/auto-generate, GET /kb/auto-generate/suggestions)",
     )
 
+    # ── Phase 10c: Visual workflow builder ────────────────────────────────────
+    workflow_builder_enabled: bool = Field(
+        default=False,
+        description="Enable visual workflow builder (POST/GET/DELETE /workflow-builder/workflows, POST .../publish, POST .../validate)",
+    )
+
+    # ── Phase 10c: Compliance & security hardening ────────────────────────────
+    compliance_enabled: bool = Field(
+        default=False,
+        description="Enable compliance & security hardening (POST/GET/DELETE /compliance/data-retention-policies, POST /compliance/pii-redact, GET /compliance/audit-export, GET /compliance/security-posture)",
+    )
+
+    # ── Phase 10c: Performance & scale ────────────────────────────────────────
+    performance_monitoring_enabled: bool = Field(
+        default=False,
+        description="Enable performance & scale monitoring (GET /admin/performance/metrics, POST/GET /admin/cache, GET /admin/connection-pool/stats)",
+    )
+
+    # ── Phase 10c: UX preferences ────────────────────────────────────────────
+    ux_preferences_enabled: bool = Field(
+        default=False,
+        description="Enable UX preferences & onboarding (GET/PUT /preferences, GET /onboarding/status, POST /onboarding/complete-step)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

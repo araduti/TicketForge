@@ -378,10 +378,10 @@ With all 40 original recommendations delivered, Phase 10 shifts focus from closi
 
 | # | Recommendation | Effort | Impact | Status |
 |---|---------------|--------|--------|--------|
-| 47 | **Add visual workflow builder** (drag-and-drop UI for automation rule and approval workflow design) | High | High | 🔲 Planned |
-| 48 | **Add compliance & security hardening** (SOC 2 readiness, data retention policies, PII redaction, encryption at rest) | High | High | 🔲 Planned |
-| 49 | **Add performance & scale improvements** (connection pooling, query optimisation, caching layer, horizontal scaling support) | High | Medium | 🔲 Planned |
-| 50 | **Add UX polish** (responsive design, accessibility improvements, keyboard shortcuts, dark mode, onboarding wizard) | Medium | Medium | 🔲 Planned |
+| 47 | **Add visual workflow builder** (drag-and-drop UI for automation rule and approval workflow design) | High | High | ✅ Done |
+| 48 | **Add compliance & security hardening** (SOC 2 readiness, data retention policies, PII redaction, encryption at rest) | High | High | ✅ Done |
+| 49 | **Add performance & scale improvements** (connection pooling, query optimisation, caching layer, horizontal scaling support) | High | Medium | ✅ Done |
+| 50 | **Add UX polish** (responsive design, accessibility improvements, keyboard shortcuts, dark mode, onboarding wizard) | Medium | Medium | ✅ Done |
 
 #### Phase 10 — Immediate Action Items
 

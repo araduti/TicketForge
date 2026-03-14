@@ -1525,3 +1525,276 @@ class KBAutoGenerateSuggestionsResponse(BaseModel):
     suggestions: list[KBSuggestion] = Field(default_factory=list)
     total_suggestions: int = 0
 
+
+# ── Phase 10c: Visual workflow builder ───────────────────────────────────────
+
+
+class WorkflowNodeType(str, Enum):
+    """Types of nodes in a visual workflow."""
+
+    trigger = "trigger"
+    condition = "condition"
+    action = "action"
+
+
+class WorkflowNode(BaseModel):
+    """A single node in a visual workflow."""
+
+    id: str = Field(..., min_length=1)
+    type: WorkflowNodeType = WorkflowNodeType.action
+    label: str = Field(default="")
+    config: dict[str, Any] = Field(default_factory=dict)
+    position_x: float = 0.0
+    position_y: float = 0.0
+
+
+class WorkflowEdge(BaseModel):
+    """An edge connecting two workflow nodes."""
+
+    source_node_id: str = Field(..., min_length=1)
+    target_node_id: str = Field(..., min_length=1)
+    label: str = Field(default="")
+
+
+class WorkflowCreate(BaseModel):
+    """POST /workflow-builder/workflows — create a visual workflow."""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(default="")
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    edges: list[WorkflowEdge] = Field(default_factory=list)
+
+
+class WorkflowRecord(BaseModel):
+    """Stored visual workflow record."""
+
+    id: str
+    name: str
+    description: str = ""
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    edges: list[WorkflowEdge] = Field(default_factory=list)
+    status: str = "draft"
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class WorkflowResponse(BaseModel):
+    success: bool = True
+    workflow: WorkflowRecord
+
+
+class WorkflowListResponse(BaseModel):
+    success: bool = True
+    workflows: list[WorkflowRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class WorkflowValidationResult(BaseModel):
+    """Result of validating a workflow definition."""
+
+    valid: bool = True
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WorkflowValidationResponse(BaseModel):
+    success: bool = True
+    validation: WorkflowValidationResult
+
+
+# ── Phase 10c: Compliance & security hardening ───────────────────────────────
+
+
+class DataRetentionPolicyCreate(BaseModel):
+    """POST /compliance/data-retention-policies — create a data retention policy."""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    entity_type: str = Field(..., description="Entity type (tickets, audit_logs, attachments)")
+    retention_days: int = Field(..., ge=1, le=3650, description="Days to retain data")
+    action: str = Field(default="archive", description="Action on expiry (archive, delete, anonymise)")
+
+
+class DataRetentionPolicyRecord(BaseModel):
+    """Stored data retention policy."""
+
+    id: str
+    name: str
+    entity_type: str
+    retention_days: int
+    action: str = "archive"
+    enabled: bool = True
+    created_at: datetime
+
+
+class DataRetentionPolicyResponse(BaseModel):
+    success: bool = True
+    policy: DataRetentionPolicyRecord
+
+
+class DataRetentionPolicyListResponse(BaseModel):
+    success: bool = True
+    policies: list[DataRetentionPolicyRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class PIIRedactRequest(BaseModel):
+    """POST /compliance/pii-redact — redact PII from text."""
+
+    text: str = Field(..., min_length=1)
+    redact_types: list[str] = Field(
+        default_factory=lambda: ["email", "phone", "ssn", "credit_card"],
+        description="Types of PII to redact",
+    )
+
+
+class PIIRedactResponse(BaseModel):
+    success: bool = True
+    original_length: int = 0
+    redacted_text: str = ""
+    redactions_applied: int = 0
+    redaction_types_found: list[str] = Field(default_factory=list)
+
+
+class AuditExportResponse(BaseModel):
+    success: bool = True
+    total_records: int = 0
+    export_format: str = "json"
+    records: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SecurityPostureItem(BaseModel):
+    """A single security posture check."""
+
+    check: str = ""
+    status: str = "pass"
+    severity: str = "info"
+    detail: str = ""
+
+
+class SecurityPostureResponse(BaseModel):
+    success: bool = True
+    overall_score: float = 0.0
+    checks: list[SecurityPostureItem] = Field(default_factory=list)
+    total_checks: int = 0
+    passed: int = 0
+    warnings: int = 0
+    failures: int = 0
+
+
+# ── Phase 10c: Performance & scale improvements ─────────────────────────────
+
+
+class PerformanceMetrics(BaseModel):
+    """System performance metrics."""
+
+    uptime_seconds: float = 0.0
+    total_requests: int = 0
+    avg_response_time_ms: float = 0.0
+    db_pool_size: int = 1
+    db_active_connections: int = 0
+    cache_hit_rate: float = 0.0
+    cache_entries: int = 0
+    memory_usage_mb: float = 0.0
+
+
+class PerformanceMetricsResponse(BaseModel):
+    success: bool = True
+    metrics: PerformanceMetrics
+
+
+class CacheStatsResponse(BaseModel):
+    success: bool = True
+    total_entries: int = 0
+    hit_count: int = 0
+    miss_count: int = 0
+    hit_rate: float = 0.0
+    memory_usage_bytes: int = 0
+
+
+class CacheInvalidateRequest(BaseModel):
+    """POST /admin/cache/invalidate — invalidate cache entries."""
+
+    pattern: str = Field(default="*", description="Pattern to match cache keys (* for all)")
+
+
+class CacheInvalidateResponse(BaseModel):
+    success: bool = True
+    invalidated_count: int = 0
+
+
+class ConnectionPoolStatsResponse(BaseModel):
+    success: bool = True
+    pool_size: int = 1
+    active_connections: int = 0
+    idle_connections: int = 1
+    max_connections: int = 10
+    wait_queue_size: int = 0
+
+
+# ── Phase 10c: UX polish ────────────────────────────────────────────────────
+
+
+class UserPreferences(BaseModel):
+    """User display and interaction preferences."""
+
+    theme: str = Field(default="light", description="UI theme (light, dark, system)")
+    language: str = Field(default="en", description="Preferred language code")
+    timezone: str = Field(default="UTC", description="Display timezone")
+    notifications_enabled: bool = Field(default=True)
+    keyboard_shortcuts_enabled: bool = Field(default=True)
+    items_per_page: int = Field(default=25, ge=5, le=100)
+    accessibility_high_contrast: bool = Field(default=False)
+    accessibility_font_size: str = Field(default="medium", description="Font size (small, medium, large)")
+
+
+class UserPreferencesUpdate(BaseModel):
+    """PUT /preferences — update user preferences."""
+
+    theme: str | None = None
+    language: str | None = None
+    timezone: str | None = None
+    notifications_enabled: bool | None = None
+    keyboard_shortcuts_enabled: bool | None = None
+    items_per_page: int | None = Field(default=None, ge=5, le=100)
+    accessibility_high_contrast: bool | None = None
+    accessibility_font_size: str | None = None
+
+
+class UserPreferencesResponse(BaseModel):
+    success: bool = True
+    user_id: str = ""
+    preferences: UserPreferences
+
+
+class OnboardingStep(BaseModel):
+    """A single onboarding step."""
+
+    step_id: str = ""
+    title: str = ""
+    description: str = ""
+    completed: bool = False
+    completed_at: datetime | None = None
+
+
+class OnboardingStatusResponse(BaseModel):
+    success: bool = True
+    user_id: str = ""
+    completed: bool = False
+    completion_percentage: float = 0.0
+    steps: list[OnboardingStep] = Field(default_factory=list)
+    total_steps: int = 0
+    completed_steps: int = 0
+
+
+class OnboardingCompleteStepRequest(BaseModel):
+    """POST /onboarding/complete-step — mark a step as complete."""
+
+    user_id: str = Field(..., min_length=1)
+    step_id: str = Field(..., min_length=1)
+
+
+class OnboardingCompleteStepResponse(BaseModel):
+    success: bool = True
+    step_id: str = ""
+    already_completed: bool = False
+
