@@ -322,13 +322,13 @@ These build competitive depth:
 ### Phase 3: Differentiation (4-6 months)
 These set TicketForge apart as a category leader:
 
-| # | Recommendation | Effort | Impact |
-|---|---------------|--------|--------|
-| 11 | **Build a simple chatbot interface** for ticket creation and KB search | High | High |
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 11 | **Build a simple chatbot interface** for ticket creation and KB search | High | High | ✅ Done |
 | 12 | **Add multi-language support** (language detection + multilingual analysis) | High | Medium | 🟡 Language detection done |
-| 13 | **Add customer self-service portal** (embedded widget for ticket submission + KB browsing) | High | Medium |
-| 14 | **Add model monitoring and drift detection** | Medium | Low-Medium |
-| 15 | **Design a plugin system** for custom enrichment processors | High | Low-Medium |
+| 13 | **Add customer self-service portal** (embedded widget for ticket submission + KB browsing) | High | Medium | ✅ Done |
+| 14 | **Add model monitoring and drift detection** | Medium | Low-Medium | ✅ Done |
+| 15 | **Design a plugin system** for custom enrichment processors | High | Low-Medium | ✅ Done |
 
 ### Prioritization Framework
 
