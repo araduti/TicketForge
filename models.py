@@ -785,13 +785,6 @@ class TicketTagRequest(BaseModel):
     tags: list[str] = Field(..., min_length=1, max_length=20, description="Tags to add")
 
 
-class TicketTagRecord(BaseModel):
-    """Tag assigned to a ticket."""
-    ticket_id: str
-    tag: str
-    added_at: datetime = Field(default_factory=_utcnow)
-
-
 class TicketTagsResponse(BaseModel):
     success: bool = True
     ticket_id: str = Field(default="")
