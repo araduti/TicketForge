@@ -769,3 +769,71 @@ class TestPhase3Config:
         from config import Settings  # noqa: PLC0415
         s = Settings(api_keys=["test"])
         assert s.chatbot_max_history == 20
+
+
+# ── Feature-disabled gate tests ──────────────────────────────────────────────
+
+class TestFeatureGates:
+    """Test that endpoints return 403 when features are disabled."""
+
+    @pytest.mark.asyncio
+    async def test_chat_disabled_returns_403(self, client):
+        """Chat endpoint returns 403 when chatbot is disabled."""
+        from config import settings  # noqa: PLC0415
+        original = settings.chatbot_enabled
+        try:
+            settings.chatbot_enabled = False
+            response = await client.post(
+                "/chat",
+                headers={"X-Api-Key": "viewer-key"},
+                json={"message": "Hello"},
+            )
+            assert response.status_code == 403
+            assert "not enabled" in response.json()["detail"].lower()
+        finally:
+            settings.chatbot_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_portal_submit_disabled_returns_403(self, client):
+        """Portal ticket submission returns 403 when portal is disabled."""
+        from config import settings  # noqa: PLC0415
+        original = settings.portal_enabled
+        try:
+            settings.portal_enabled = False
+            response = await client.post(
+                "/portal/tickets",
+                headers={"X-Api-Key": "viewer-key"},
+                json={"title": "Test", "reporter_email": "user@test.com"},
+            )
+            assert response.status_code == 403
+            assert "not enabled" in response.json()["detail"].lower()
+        finally:
+            settings.portal_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_portal_page_disabled_returns_403(self, client):
+        """Portal HTML page returns 403 when portal is disabled."""
+        from config import settings  # noqa: PLC0415
+        original = settings.portal_enabled
+        try:
+            settings.portal_enabled = False
+            response = await client.get("/portal")
+            assert response.status_code == 403
+        finally:
+            settings.portal_enabled = original
+
+    @pytest.mark.asyncio
+    async def test_monitoring_disabled_returns_403(self, client):
+        """Monitoring endpoint returns 403 when monitoring is disabled."""
+        from config import settings  # noqa: PLC0415
+        original = settings.monitoring_enabled
+        try:
+            settings.monitoring_enabled = False
+            response = await client.get(
+                "/monitoring/drift",
+                headers={"X-Api-Key": "admin-key"},
+            )
+            assert response.status_code == 403
+            assert "not enabled" in response.json()["detail"].lower()
+        finally:
+            settings.monitoring_enabled = original
