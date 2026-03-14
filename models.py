@@ -329,3 +329,87 @@ class DetectDuplicatesResponse(BaseModel):
     query_ticket_id: str = Field(default="", description="The ticket ID being checked")
     duplicates: list[DuplicateCandidate] = Field(default_factory=list)
     total_candidates: int = 0
+
+
+# ── Knowledge base models ────────────────────────────────────────────────────
+
+class KBArticleCreate(BaseModel):
+    """POST /kb/articles — create a new knowledge base article."""
+
+    title: str = Field(..., min_length=1, max_length=500, description="Article title")
+    content: str = Field(..., min_length=1, max_length=50000, description="Article body (Markdown supported)")
+    category: str = Field(default="general", max_length=200, description="Article category for organisation")
+    tags: list[str] = Field(default_factory=list, description="Searchable tags")
+
+
+class KBArticleUpdate(BaseModel):
+    """PUT /kb/articles/{id} — update an existing knowledge base article."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    content: str | None = Field(default=None, min_length=1, max_length=50000)
+    category: str | None = Field(default=None, max_length=200)
+    tags: list[str] | None = Field(default=None)
+
+
+class KBArticleRecord(BaseModel):
+    """Knowledge base article as stored in the database."""
+
+    id: str = Field(..., description="Unique article identifier")
+    title: str
+    content: str
+    category: str = "general"
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class KBArticleResponse(BaseModel):
+    success: bool = True
+    data: KBArticleRecord
+
+
+class KBArticleListResponse(BaseModel):
+    success: bool = True
+    data: list[KBArticleRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class KBSearchRequest(BaseModel):
+    """POST /kb/search — semantic search over knowledge base articles."""
+
+    query: str = Field(..., min_length=1, max_length=2000, description="Search query text")
+    max_results: int = Field(default=5, ge=1, le=20, description="Maximum results to return")
+    threshold: float = Field(default=0.3, ge=0.0, le=1.0, description="Minimum similarity score")
+
+
+class KBSearchResult(BaseModel):
+    """A knowledge base article matched by semantic search."""
+
+    article_id: str
+    title: str
+    category: str = ""
+    relevance_score: float = Field(ge=0.0, le=1.0, description="Cosine similarity 0.0-1.0")
+    snippet: str = Field(default="", description="Content preview (first 200 chars)")
+
+
+class KBSearchResponse(BaseModel):
+    success: bool = True
+    query: str = ""
+    results: list[KBSearchResult] = Field(default_factory=list)
+    total: int = 0
+
+
+# ── Email ingestion models ───────────────────────────────────────────────────
+
+class EmailIngestRequest(BaseModel):
+    """POST /ingest/email — ingest a ticket from an email webhook (SendGrid, Mailgun, generic)."""
+
+    sender: str = Field(..., min_length=1, description="Sender email address")
+    subject: str = Field(default="", max_length=2000, description="Email subject line")
+    body_plain: str = Field(default="", max_length=50000, description="Plain-text email body")
+    body_html: str = Field(default="", max_length=100000, description="HTML email body (fallback)")
+    recipient: str = Field(default="", description="Recipient/to email address")
+    message_id: str = Field(default="", description="Email Message-ID header")
+    in_reply_to: str = Field(default="", description="In-Reply-To header for threading")
+    timestamp: datetime = Field(default_factory=_utcnow, description="Email received timestamp")
+    headers: dict[str, str] = Field(default_factory=dict, description="Additional email headers")

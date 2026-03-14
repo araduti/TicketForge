@@ -84,7 +84,8 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = Field(
         default="sqlite+aiosqlite:///./ticketforge.db",
-        description="Async SQLite database URL",
+        description="Database URL. Supports SQLite (sqlite+aiosqlite:///./file.db) "
+        "or PostgreSQL (postgresql://user:pass@host:5432/dbname)",
     )
     db_ticket_ttl_hours: int = Field(
         default=24,
@@ -170,6 +171,16 @@ class Settings(BaseSettings):
     notify_on_sla_breach: bool = Field(
         default=True,
         description="Send notification when a ticket SLA is breached or at risk",
+    )
+
+    # ── Email ingestion ───────────────────────────────────────────────────────
+    email_ingestion_enabled: bool = Field(
+        default=False,
+        description="Enable the POST /ingest/email endpoint",
+    )
+    email_default_priority: str = Field(
+        default="medium",
+        description="Default priority for tickets created from emails",
     )
 
     # ── App ───────────────────────────────────────────────────────────────────
