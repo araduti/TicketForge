@@ -58,6 +58,39 @@ Tags: {tags}
 
 # ── Automation detection prompt ───────────────────────────────────────────────
 
+SUGGEST_RESPONSE_PROMPT = """\
+You are drafting a professional response for an IT support agent to send to the user who submitted the ticket below.
+
+Ticket info:
+- ID: {ticket_id}
+- Title: {title}
+- Description: {description}
+- Category: {category}
+- Sub-category: {sub_category}
+- Priority: {priority}
+- Sentiment: {sentiment}
+- Summary: {summary}
+- KB articles: {kb_articles}
+- Root cause hypothesis: {root_cause}
+
+Return a JSON object with this exact schema:
+{{
+  "subject": "<email-style subject line>",
+  "body": "<professional response message to the user, use newlines for paragraphs>",
+  "tone": "<one of: empathetic | professional | urgent | informational>",
+  "suggested_actions": ["<action 1>", "<action 2>"]
+}}
+
+Guidelines:
+- Acknowledge the user's issue and sentiment
+- Reference relevant KB articles if available
+- Include concrete next steps
+- Match the urgency to the ticket priority
+- If user is frustrated, use an empathetic tone
+- Keep the response concise but helpful
+"""
+
+
 AUTOMATION_USER_PROMPT = """\
 You have detected a recurring pattern in IT support tickets. Analyse the pattern below
 and return a JSON object:

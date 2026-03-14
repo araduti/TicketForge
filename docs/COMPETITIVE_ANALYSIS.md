@@ -152,15 +152,9 @@ These set the benchmark for enterprise expectations:
 ### 🔴 Critical Gaps (High Impact, Blocking Adoption)
 
 #### 6.1 No Web Dashboard / UI
-**Impact:** Very High  
-**Current state:** TicketForge is API-only. Users must use curl, Postman, or build their own UI.  
-**Competitor benchmark:** Every competitor has a web dashboard. Even the lightweight `langgraph-ticket-routing` includes a Streamlit dashboard.  
-**Recommendation:** Build a lightweight web dashboard (React, Vue, or Streamlit) showing:
-- Recent tickets with enrichment results
-- Analytics visualizations (charts for categories, priorities, trends)
-- SLA status overview
-- Automation opportunity alerts
-- Audit log viewer
+**Impact:** Very High
+**Status:** ✅ IMPLEMENTED. Added a built-in HTML dashboard at `GET /dashboard` with recent tickets table, category/priority bar charts, SLA overview, and analytics summary. The dashboard uses API key authentication to fetch data from existing API endpoints.
+**Previous state:** TicketForge was API-only. Users had to use curl, Postman, or build their own UI.
 
 #### 6.2 ~~No Sentiment Analysis~~ ✅ IMPLEMENTED
 **Impact:** High  
@@ -233,10 +227,9 @@ These set the benchmark for enterprise expectations:
 ### 🟢 Nice-to-Have Gaps (Lower Priority, Enhances Competitiveness)
 
 #### 6.11 No AI Response Suggestions / Agent Assist
-**Impact:** Medium-Low  
-**Current state:** TicketForge enriches tickets but does not suggest responses to agents.  
-**Competitor benchmark:** Zendesk AI, LibreDesk, and Freshservice provide AI-generated response drafts for agents.  
-**Recommendation:** Add a `POST /suggest-response` endpoint that generates a draft response for an enriched ticket using the LLM.
+**Impact:** Medium-Low
+**Status:** ✅ IMPLEMENTED. Added `POST /suggest-response` endpoint that generates draft agent responses for enriched tickets using the LLM. Returns structured JSON with subject, body, tone, and suggested actions.
+**Previous state:** TicketForge enriched tickets but did not suggest responses to agents.
 
 #### 6.12 No CSAT (Customer Satisfaction) Surveys
 **Impact:** Low-Medium  
@@ -253,15 +246,14 @@ These set the benchmark for enterprise expectations:
 - Confidence score trends
 - LLM response quality metrics
 
-#### 6.14 No Vector Search / RAG Pipeline
+#### 6.14 No Vector Search / RAG Pipeline — 🟡 PARTIALLY IMPLEMENTED
 **Impact:** Medium  
-**Current state:** Uses sentence-transformers for automation detection clustering only. No vector database or RAG pipeline.  
-**Competitor benchmark:** `databricks-ai-ticket-vectorsearch` uses full RAG with vector search. Zendesk AI uses semantic search.  
-**Recommendation:** Add a vector store (ChromaDB, Qdrant, or pgvector) to enable:
-- Semantic ticket search
-- Similar ticket retrieval
+**Status:** Partially implemented. Duplicate ticket detection now uses sentence-transformer embeddings for cosine similarity search via `POST /tickets/detect-duplicates`. Full RAG pipeline and vector database integration are not yet implemented.  
+**Previous state:** Used sentence-transformers for automation detection clustering only. No vector database or RAG pipeline.  
+**Remaining work:**
+- Add a vector store (ChromaDB, Qdrant, or pgvector) for persistent vector indexing
+- Semantic ticket search endpoint
 - RAG-grounded KB article suggestions
-- Duplicate ticket detection
 
 #### 6.15 No Multi-Agent Architecture
 **Impact:** Low-Medium  
@@ -316,20 +308,20 @@ These can be implemented with minimal effort and dramatically improve adoption:
 |---|---------------|--------|--------|--------|
 | 1 | **Add sentiment analysis** to the enrichment pipeline (extend LLM prompt + add `sentiment` field) | Low | High | ✅ Done |
 | 2 | **Add cloud LLM provider support** (OpenAI, Azure, Anthropic via a pluggable interface) | Medium | High | ✅ Done |
-| 3 | **Build a minimal web dashboard** (Streamlit or simple Vue.js app showing recent tickets, analytics charts, SLA overview) | Medium | Very High | ❌ Pending |
+| 3 | **Build a minimal web dashboard** (Streamlit or simple Vue.js app showing recent tickets, analytics charts, SLA overview) | Medium | Very High | ✅ Done |
 | 4 | **Add Slack notifications** for high-priority/SLA-breach tickets | Low | Medium | ✅ Done |
 | 5 | **Add ticket status tracking** (open/in-progress/resolved/closed lifecycle) | Low | Medium | ✅ Done |
 
 ### Phase 2: Core Enhancements (2-4 months)
 These build competitive depth:
 
-| # | Recommendation | Effort | Impact |
-|---|---------------|--------|--------|
-| 6 | **Build a knowledge base module** with CRUD API and vector search (RAG-grounded KB suggestions) | High | High |
-| 7 | **Add PostgreSQL support** as alternative to SQLite | Medium | Medium |
-| 8 | **Add email ingestion channel** (IMAP polling or webhook-based) | Medium | Medium |
-| 9 | **Add AI response suggestions** (`POST /suggest-response` endpoint) | Medium | Medium |
-| 10 | **Add duplicate ticket detection** using vector similarity | Medium | Medium |
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 6 | **Build a knowledge base module** with CRUD API and vector search (RAG-grounded KB suggestions) | High | High | ❌ Pending |
+| 7 | **Add PostgreSQL support** as alternative to SQLite | Medium | Medium | ❌ Pending |
+| 8 | **Add email ingestion channel** (IMAP polling or webhook-based) | Medium | Medium | ❌ Pending |
+| 9 | **Add AI response suggestions** (`POST /suggest-response` endpoint) | Medium | Medium | ✅ Done |
+| 10 | **Add duplicate ticket detection** using vector similarity | Medium | Medium | ✅ Done |
 
 ### Phase 3: Differentiation (4-6 months)
 These set TicketForge apart as a category leader:

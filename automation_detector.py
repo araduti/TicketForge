@@ -50,6 +50,10 @@ class AutomationDetector:
             self._model = SentenceTransformer(self._settings.embedding_model)
         return self._model
 
+    def get_embedding_model(self) -> "SentenceTransformer":
+        """Public interface to retrieve the embedding model (lazy-loaded)."""
+        return self._get_model()
+
     def add_to_history(self, text: str, created_at: datetime | None = None) -> None:
         """Append a ticket text to the rolling history window."""
         ts = created_at or datetime.now(tz=timezone.utc)
