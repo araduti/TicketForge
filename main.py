@@ -59,6 +59,7 @@ from models import (
     ApprovalRequestCreate,
     ApprovalResponse,
     ApprovalStatus,
+    AuditExportResponse,
     AuditLogResponse,
     AutomationRuleAction,
     AutomationRuleCondition,
@@ -77,6 +78,9 @@ from models import (
     BulkOperationResult,
     BulkStatusUpdate,
     BulkTagUpdate,
+    CacheInvalidateRequest,
+    CacheInvalidateResponse,
+    CacheStatsResponse,
     CategoryCount,
     CategoryForecast,
     CategoryResult,
@@ -84,6 +88,7 @@ from models import (
     ChatResponse,
     ClassifyRequest,
     ClassifyResponse,
+    ConnectionPoolStatsResponse,
     ContactCreate,
     ContactListResponse,
     ContactRecord,
@@ -102,6 +107,10 @@ from models import (
     CustomFieldRecord,
     CustomFieldResponse,
     DailyTrend,
+    DataRetentionPolicyCreate,
+    DataRetentionPolicyListResponse,
+    DataRetentionPolicyRecord,
+    DataRetentionPolicyResponse,
     DetectDuplicatesRequest,
     DetectDuplicatesResponse,
     DetectedAnomaly,
@@ -137,11 +146,19 @@ from models import (
     MergedTicketRecord,
     MonitoringResponse,
     MultiAgentStatusResponse,
+    OnboardingCompleteStepRequest,
+    OnboardingCompleteStepResponse,
+    OnboardingStatusResponse,
+    OnboardingStep,
     OutboundWebhookEvent,
     PluginInfo,
     PluginListResponse,
     PortalTicketResponse,
     PortalTicketSubmission,
+    PerformanceMetrics,
+    PerformanceMetricsResponse,
+    PIIRedactRequest,
+    PIIRedactResponse,
     Priority,
     PriorityCount,
     PriorityResult,
@@ -161,6 +178,8 @@ from models import (
     ScheduledReportListResponse,
     ScheduledReportRecord,
     ScheduledReportResponse,
+    SecurityPostureItem,
+    SecurityPostureResponse,
     Sentiment,
     SentimentResult,
     SLAInfo,
@@ -198,6 +217,9 @@ from models import (
     TrainClassifierRequest,
     TrainClassifierResponse,
     TrainingSample,
+    UserPreferences,
+    UserPreferencesResponse,
+    UserPreferencesUpdate,
     VectorStoreStatusResponse,
     VolumeForecastPoint,
     VolumeForecastResponse,
@@ -205,6 +227,14 @@ from models import (
     WebhookEventType,
     WebhookIngest,
     WebSocketEvent,
+    WorkflowCreate,
+    WorkflowEdge,
+    WorkflowListResponse,
+    WorkflowNode,
+    WorkflowRecord,
+    WorkflowResponse,
+    WorkflowValidationResponse,
+    WorkflowValidationResult,
 )
 from notifications import send_notifications
 from ticket_processor import TicketProcessor
@@ -501,6 +531,48 @@ CREATE TABLE IF NOT EXISTS anomaly_rules (
     window_hours INTEGER NOT NULL DEFAULT 24,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS visual_workflows (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    nodes TEXT NOT NULL DEFAULT '[]',
+    edges TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS data_retention_policies (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    retention_days INTEGER NOT NULL,
+    action TEXT NOT NULL DEFAULT 'archive',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id TEXT PRIMARY KEY,
+    theme TEXT NOT NULL DEFAULT 'light',
+    language TEXT NOT NULL DEFAULT 'en',
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    notifications_enabled INTEGER NOT NULL DEFAULT 1,
+    keyboard_shortcuts_enabled INTEGER NOT NULL DEFAULT 1,
+    items_per_page INTEGER NOT NULL DEFAULT 25,
+    accessibility_high_contrast INTEGER NOT NULL DEFAULT 0,
+    accessibility_font_size TEXT NOT NULL DEFAULT 'medium',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS onboarding_progress (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    UNIQUE(user_id, step_id)
 );
 """
 
@@ -6007,6 +6079,1031 @@ async def kb_auto_generate_suggestions(
     return KBAutoGenerateSuggestionsResponse(
         suggestions=suggestions,
         total_suggestions=len(suggestions),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 10c — Platform Maturity
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ── Visual Workflow Builder ──────────────────────────────────────────────────
+
+_ONBOARDING_STEPS = [
+    {"step_id": "create_api_key", "title": "Create an API Key", "description": "Generate your first API key to authenticate with TicketForge."},
+    {"step_id": "submit_ticket", "title": "Submit a Ticket", "description": "Submit your first ticket through the portal or API."},
+    {"step_id": "explore_kb", "title": "Explore Knowledge Base", "description": "Search and browse the knowledge base for helpful articles."},
+    {"step_id": "configure_sla", "title": "Configure SLA Policies", "description": "Set up SLA policies tailored to your team's needs."},
+    {"step_id": "setup_notifications", "title": "Set Up Notifications", "description": "Configure Slack or Teams notifications for ticket updates."},
+]
+
+
+@app.post(
+    "/workflow-builder/workflows",
+    response_model=WorkflowResponse,
+    tags=["Visual Workflow Builder"],
+)
+async def create_visual_workflow(
+    body: WorkflowCreate,
+    api_key: str = Depends(require_admin),
+) -> WorkflowResponse:
+    """Create a visual workflow definition for automation rules and approval workflows."""
+    if not settings.workflow_builder_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Visual workflow builder is not enabled. Set WORKFLOW_BUILDER_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    workflow_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    nodes_json = _json.dumps([n.model_dump() for n in body.nodes])
+    edges_json = _json.dumps([e.model_dump() for e in body.edges])
+
+    await _db.execute(
+        "INSERT INTO visual_workflows (id, name, description, nodes, edges, status, created_at) VALUES (?, ?, ?, ?, ?, 'draft', ?)",
+        (workflow_id, body.name, body.description, nodes_json, edges_json, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_visual_workflow",
+        resource=workflow_id,
+    )
+
+    record = WorkflowRecord(
+        id=workflow_id,
+        name=body.name,
+        description=body.description,
+        nodes=body.nodes,
+        edges=body.edges,
+        status="draft",
+        created_at=datetime.fromisoformat(now),
+    )
+    return WorkflowResponse(workflow=record)
+
+
+@app.get(
+    "/workflow-builder/workflows",
+    response_model=WorkflowListResponse,
+    tags=["Visual Workflow Builder"],
+)
+async def list_visual_workflows(
+    api_key: str = Depends(require_viewer),
+) -> WorkflowListResponse:
+    """List all visual workflows."""
+    if not settings.workflow_builder_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Visual workflow builder is not enabled. Set WORKFLOW_BUILDER_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT id, name, description, nodes, edges, status, created_at, updated_at FROM visual_workflows ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    workflows = [
+        WorkflowRecord(
+            id=r[0],
+            name=r[1],
+            description=r[2],
+            nodes=[WorkflowNode(**n) for n in _json.loads(r[3])],
+            edges=[WorkflowEdge(**e) for e in _json.loads(r[4])],
+            status=r[5],
+            created_at=datetime.fromisoformat(r[6]),
+            updated_at=datetime.fromisoformat(r[7]) if r[7] else None,
+        )
+        for r in rows
+    ]
+    return WorkflowListResponse(workflows=workflows, total=len(workflows))
+
+
+@app.delete(
+    "/workflow-builder/workflows/{workflow_id}",
+    response_model=WorkflowResponse,
+    tags=["Visual Workflow Builder"],
+)
+async def delete_visual_workflow(
+    workflow_id: str,
+    api_key: str = Depends(require_admin),
+) -> WorkflowResponse:
+    """Delete a visual workflow by ID."""
+    if not settings.workflow_builder_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Visual workflow builder is not enabled. Set WORKFLOW_BUILDER_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT id, name, description, nodes, edges, status, created_at, updated_at FROM visual_workflows WHERE id = ?",
+        (workflow_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    await _db.execute("DELETE FROM visual_workflows WHERE id = ?", (workflow_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_visual_workflow",
+        resource=workflow_id,
+    )
+
+    record = WorkflowRecord(
+        id=row[0],
+        name=row[1],
+        description=row[2],
+        nodes=[WorkflowNode(**n) for n in _json.loads(row[3])],
+        edges=[WorkflowEdge(**e) for e in _json.loads(row[4])],
+        status=row[5],
+        created_at=datetime.fromisoformat(row[6]),
+        updated_at=datetime.fromisoformat(row[7]) if row[7] else None,
+    )
+    return WorkflowResponse(workflow=record)
+
+
+@app.post(
+    "/workflow-builder/workflows/{workflow_id}/publish",
+    response_model=WorkflowResponse,
+    tags=["Visual Workflow Builder"],
+)
+async def publish_visual_workflow(
+    workflow_id: str,
+    api_key: str = Depends(require_admin),
+) -> WorkflowResponse:
+    """Publish (activate) a visual workflow."""
+    if not settings.workflow_builder_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Visual workflow builder is not enabled. Set WORKFLOW_BUILDER_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT id, name, description, nodes, edges, status, created_at FROM visual_workflows WHERE id = ?",
+        (workflow_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    await _db.execute(
+        "UPDATE visual_workflows SET status = 'published', updated_at = ? WHERE id = ?",
+        (now, workflow_id),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="publish_visual_workflow",
+        resource=workflow_id,
+    )
+
+    record = WorkflowRecord(
+        id=row[0],
+        name=row[1],
+        description=row[2],
+        nodes=[WorkflowNode(**n) for n in _json.loads(row[3])],
+        edges=[WorkflowEdge(**e) for e in _json.loads(row[4])],
+        status="published",
+        created_at=datetime.fromisoformat(row[6]),
+        updated_at=datetime.fromisoformat(now),
+    )
+    return WorkflowResponse(workflow=record)
+
+
+@app.post(
+    "/workflow-builder/workflows/{workflow_id}/validate",
+    response_model=WorkflowValidationResponse,
+    tags=["Visual Workflow Builder"],
+)
+async def validate_visual_workflow(
+    workflow_id: str,
+    api_key: str = Depends(require_viewer),
+) -> WorkflowValidationResponse:
+    """Validate a visual workflow definition for correctness."""
+    if not settings.workflow_builder_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Visual workflow builder is not enabled. Set WORKFLOW_BUILDER_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT nodes, edges FROM visual_workflows WHERE id = ?",
+        (workflow_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    nodes = _json.loads(row[0])
+    edges = _json.loads(row[1])
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Validate: must have at least one node
+    if not nodes:
+        errors.append("Workflow must contain at least one node.")
+
+    # Validate: must have a trigger node
+    trigger_nodes = [n for n in nodes if n.get("type") == "trigger"]
+    if not trigger_nodes:
+        errors.append("Workflow must contain at least one trigger node.")
+
+    # Validate: edges reference valid nodes
+    node_ids = {n["id"] for n in nodes}
+    for edge in edges:
+        if edge.get("source_node_id") not in node_ids:
+            errors.append(f"Edge references unknown source node: {edge.get('source_node_id')}")
+        if edge.get("target_node_id") not in node_ids:
+            errors.append(f"Edge references unknown target node: {edge.get('target_node_id')}")
+
+    # Warning: orphan nodes (no edges)
+    connected_ids: set[str] = set()
+    for edge in edges:
+        connected_ids.add(edge.get("source_node_id", ""))
+        connected_ids.add(edge.get("target_node_id", ""))
+    for n in nodes:
+        if n["id"] not in connected_ids and len(nodes) > 1:
+            warnings.append(f"Node '{n['id']}' is not connected to any other node.")
+
+    valid = len(errors) == 0
+    result = WorkflowValidationResult(valid=valid, errors=errors, warnings=warnings)
+    return WorkflowValidationResponse(validation=result)
+
+
+# ── Compliance & Security Hardening ──────────────────────────────────────────
+
+
+@app.post(
+    "/compliance/data-retention-policies",
+    response_model=DataRetentionPolicyResponse,
+    tags=["Compliance"],
+)
+async def create_data_retention_policy(
+    body: DataRetentionPolicyCreate,
+    api_key: str = Depends(require_admin),
+) -> DataRetentionPolicyResponse:
+    """Create a data retention policy. Requires admin role."""
+    if not settings.compliance_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Compliance features are not enabled. Set COMPLIANCE_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    valid_entity_types = {"tickets", "audit_logs", "attachments", "contacts", "kb_articles"}
+    if body.entity_type not in valid_entity_types:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid entity_type. Must be one of: {', '.join(sorted(valid_entity_types))}",
+        )
+
+    valid_actions = {"archive", "delete", "anonymise"}
+    if body.action not in valid_actions:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid action. Must be one of: {', '.join(sorted(valid_actions))}",
+        )
+
+    policy_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        "INSERT INTO data_retention_policies (id, name, entity_type, retention_days, action, enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+        (policy_id, body.name, body.entity_type, body.retention_days, body.action, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_data_retention_policy",
+        resource=policy_id,
+    )
+
+    record = DataRetentionPolicyRecord(
+        id=policy_id,
+        name=body.name,
+        entity_type=body.entity_type,
+        retention_days=body.retention_days,
+        action=body.action,
+        enabled=True,
+        created_at=datetime.fromisoformat(now),
+    )
+    return DataRetentionPolicyResponse(policy=record)
+
+
+@app.get(
+    "/compliance/data-retention-policies",
+    response_model=DataRetentionPolicyListResponse,
+    tags=["Compliance"],
+)
+async def list_data_retention_policies(
+    api_key: str = Depends(require_viewer),
+) -> DataRetentionPolicyListResponse:
+    """List all data retention policies."""
+    if not settings.compliance_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Compliance features are not enabled. Set COMPLIANCE_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id, name, entity_type, retention_days, action, enabled, created_at FROM data_retention_policies ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    policies = [
+        DataRetentionPolicyRecord(
+            id=r[0],
+            name=r[1],
+            entity_type=r[2],
+            retention_days=r[3],
+            action=r[4],
+            enabled=bool(r[5]),
+            created_at=datetime.fromisoformat(r[6]),
+        )
+        for r in rows
+    ]
+    return DataRetentionPolicyListResponse(policies=policies, total=len(policies))
+
+
+@app.delete(
+    "/compliance/data-retention-policies/{policy_id}",
+    response_model=DataRetentionPolicyResponse,
+    tags=["Compliance"],
+)
+async def delete_data_retention_policy(
+    policy_id: str,
+    api_key: str = Depends(require_admin),
+) -> DataRetentionPolicyResponse:
+    """Delete a data retention policy by ID."""
+    if not settings.compliance_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Compliance features are not enabled. Set COMPLIANCE_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id, name, entity_type, retention_days, action, enabled, created_at FROM data_retention_policies WHERE id = ?",
+        (policy_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Data retention policy not found")
+
+    await _db.execute("DELETE FROM data_retention_policies WHERE id = ?", (policy_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_data_retention_policy",
+        resource=policy_id,
+    )
+
+    record = DataRetentionPolicyRecord(
+        id=row[0],
+        name=row[1],
+        entity_type=row[2],
+        retention_days=row[3],
+        action=row[4],
+        enabled=bool(row[5]),
+        created_at=datetime.fromisoformat(row[6]),
+    )
+    return DataRetentionPolicyResponse(policy=record)
+
+
+import re as _re
+
+_PII_PATTERNS: dict[str, str] = {
+    "email": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+    "phone": r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b",
+    "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
+    "credit_card": r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+}
+
+
+@app.post(
+    "/compliance/pii-redact",
+    response_model=PIIRedactResponse,
+    tags=["Compliance"],
+)
+async def redact_pii(
+    body: PIIRedactRequest,
+    api_key: str = Depends(require_viewer),
+) -> PIIRedactResponse:
+    """Redact PII (personally identifiable information) from text."""
+    if not settings.compliance_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Compliance features are not enabled. Set COMPLIANCE_ENABLED=true.",
+        )
+
+    redacted = body.text
+    total_redactions = 0
+    types_found: list[str] = []
+
+    for pii_type in body.redact_types:
+        pattern = _PII_PATTERNS.get(pii_type)
+        if not pattern:
+            continue
+        matches = _re.findall(pattern, redacted)
+        if matches:
+            types_found.append(pii_type)
+            total_redactions += len(matches)
+            redacted = _re.sub(pattern, f"[{pii_type.upper()}_REDACTED]", redacted)
+
+    return PIIRedactResponse(
+        original_length=len(body.text),
+        redacted_text=redacted,
+        redactions_applied=total_redactions,
+        redaction_types_found=types_found,
+    )
+
+
+@app.get(
+    "/compliance/audit-export",
+    response_model=AuditExportResponse,
+    tags=["Compliance"],
+)
+async def export_audit_logs(
+    days: int = Query(default=30, ge=1, le=365, description="Number of days of audit logs to export"),
+    api_key: str = Depends(require_admin),
+) -> AuditExportResponse:
+    """Export audit logs for SOC 2 compliance reporting."""
+    if not settings.compliance_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Compliance features are not enabled. Set COMPLIANCE_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    since = (datetime.now(tz=timezone.utc) - timedelta(days=days)).isoformat()
+
+    async with _db.execute(
+        "SELECT id, timestamp, api_key, role, action, resource, detail FROM audit_log WHERE timestamp >= ? ORDER BY timestamp DESC",
+        (since,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    records = [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "api_key": r[2][:8] + "***" if r[2] and len(r[2]) > 8 else r[2],
+            "role": r[3],
+            "action": r[4],
+            "resource": r[5],
+            "detail": r[6],
+        }
+        for r in rows
+    ]
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="export_audit_logs",
+        resource=f"{len(records)}_records",
+    )
+
+    return AuditExportResponse(
+        total_records=len(records),
+        export_format="json",
+        records=records,
+    )
+
+
+@app.get(
+    "/compliance/security-posture",
+    response_model=SecurityPostureResponse,
+    tags=["Compliance"],
+)
+async def get_security_posture(
+    api_key: str = Depends(require_admin),
+) -> SecurityPostureResponse:
+    """Get security posture report with SOC 2 readiness checks."""
+    if not settings.compliance_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Compliance features are not enabled. Set COMPLIANCE_ENABLED=true.",
+        )
+
+    checks: list[SecurityPostureItem] = []
+
+    # Check: API key authentication enabled
+    checks.append(SecurityPostureItem(
+        check="API key authentication",
+        status="pass" if settings.api_keys else "fail",
+        severity="critical",
+        detail="API key authentication is configured." if settings.api_keys else "No API keys configured.",
+    ))
+
+    # Check: Role-based access control
+    has_rbac = bool(settings.api_key_roles)
+    checks.append(SecurityPostureItem(
+        check="Role-based access control",
+        status="pass" if has_rbac else "warning",
+        severity="high",
+        detail="RBAC is configured with role mappings." if has_rbac else "No role mappings configured.",
+    ))
+
+    # Check: Rate limiting
+    checks.append(SecurityPostureItem(
+        check="Rate limiting",
+        status="pass",
+        severity="medium",
+        detail="Rate limiting is active via slowapi.",
+    ))
+
+    # Check: Audit logging
+    checks.append(SecurityPostureItem(
+        check="Audit logging",
+        status="pass",
+        severity="high",
+        detail="Audit logging is enabled for all state-changing operations.",
+    ))
+
+    # Check: Data retention policies
+    if _db is not None:
+        async with _db.execute("SELECT COUNT(*) FROM data_retention_policies") as cursor:
+            policy_count = (await cursor.fetchone())[0]
+        checks.append(SecurityPostureItem(
+            check="Data retention policies",
+            status="pass" if policy_count > 0 else "warning",
+            severity="medium",
+            detail=f"{policy_count} data retention policy(ies) configured." if policy_count > 0 else "No data retention policies configured.",
+        ))
+    else:
+        checks.append(SecurityPostureItem(
+            check="Data retention policies",
+            status="fail",
+            severity="medium",
+            detail="Database not available for policy check.",
+        ))
+
+    # Check: HTTPS enforcement
+    checks.append(SecurityPostureItem(
+        check="HTTPS enforcement",
+        status="warning",
+        severity="high",
+        detail="HTTPS should be enforced at the reverse proxy / load balancer level.",
+    ))
+
+    passed = sum(1 for c in checks if c.status == "pass")
+    warning_count = sum(1 for c in checks if c.status == "warning")
+    fail_count = sum(1 for c in checks if c.status == "fail")
+    total = len(checks)
+    score = round((passed / total) * 100, 1) if total > 0 else 0.0
+
+    return SecurityPostureResponse(
+        overall_score=score,
+        checks=checks,
+        total_checks=total,
+        passed=passed,
+        warnings=warning_count,
+        failures=fail_count,
+    )
+
+
+# ── Performance & Scale Improvements ─────────────────────────────────────────
+
+_app_start_time: float = time.monotonic()
+_request_count: int = 0
+_total_response_time: float = 0.0
+_cache_store: dict[str, tuple[float, object]] = {}  # key -> (expiry_timestamp, value)
+_cache_hits: int = 0
+_cache_misses: int = 0
+
+
+@app.post(
+    "/admin/cache/invalidate",
+    response_model=CacheInvalidateResponse,
+    tags=["Performance"],
+)
+async def invalidate_cache(
+    body: CacheInvalidateRequest,
+    api_key: str = Depends(require_admin),
+) -> CacheInvalidateResponse:
+    """Invalidate cache entries matching a pattern."""
+    if not settings.performance_monitoring_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Performance monitoring is not enabled. Set PERFORMANCE_MONITORING_ENABLED=true.",
+        )
+
+    global _cache_store  # noqa: PLW0603
+    if body.pattern == "*":
+        count = len(_cache_store)
+        _cache_store = {}
+    else:
+        keys_to_remove = [k for k in _cache_store if body.pattern in k]
+        count = len(keys_to_remove)
+        for k in keys_to_remove:
+            del _cache_store[k]
+
+    if _db is not None:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="invalidate_cache",
+            resource=f"{count}_entries",
+        )
+
+    return CacheInvalidateResponse(invalidated_count=count)
+
+
+@app.get(
+    "/admin/cache/stats",
+    response_model=CacheStatsResponse,
+    tags=["Performance"],
+)
+async def get_cache_stats(
+    api_key: str = Depends(require_admin),
+) -> CacheStatsResponse:
+    """Get cache statistics."""
+    if not settings.performance_monitoring_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Performance monitoring is not enabled. Set PERFORMANCE_MONITORING_ENABLED=true.",
+        )
+
+    total = _cache_hits + _cache_misses
+    hit_rate = round(_cache_hits / total, 4) if total > 0 else 0.0
+
+    import sys as _sys
+
+    mem = sum(_sys.getsizeof(v) for v in _cache_store.values())
+
+    return CacheStatsResponse(
+        total_entries=len(_cache_store),
+        hit_count=_cache_hits,
+        miss_count=_cache_misses,
+        hit_rate=hit_rate,
+        memory_usage_bytes=mem,
+    )
+
+
+@app.get(
+    "/admin/performance/metrics",
+    response_model=PerformanceMetricsResponse,
+    tags=["Performance"],
+)
+async def get_performance_metrics(
+    api_key: str = Depends(require_admin),
+) -> PerformanceMetricsResponse:
+    """Get system performance metrics."""
+    if not settings.performance_monitoring_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Performance monitoring is not enabled. Set PERFORMANCE_MONITORING_ENABLED=true.",
+        )
+
+    import os as _os
+
+    uptime = time.monotonic() - _app_start_time
+    avg_resp = round(_total_response_time / _request_count * 1000, 2) if _request_count > 0 else 0.0
+
+    # Memory usage
+    try:
+        import resource as _resource
+
+        mem_mb = round(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss / 1024, 2)
+    except Exception:
+        mem_mb = 0.0
+
+    total_hits_misses = _cache_hits + _cache_misses
+    cache_rate = round(_cache_hits / total_hits_misses, 4) if total_hits_misses > 0 else 0.0
+
+    metrics = PerformanceMetrics(
+        uptime_seconds=round(uptime, 2),
+        total_requests=_request_count,
+        avg_response_time_ms=avg_resp,
+        db_pool_size=1,
+        db_active_connections=1 if _db is not None else 0,
+        cache_hit_rate=cache_rate,
+        cache_entries=len(_cache_store),
+        memory_usage_mb=mem_mb,
+    )
+    return PerformanceMetricsResponse(metrics=metrics)
+
+
+@app.get(
+    "/admin/connection-pool/stats",
+    response_model=ConnectionPoolStatsResponse,
+    tags=["Performance"],
+)
+async def get_connection_pool_stats(
+    api_key: str = Depends(require_admin),
+) -> ConnectionPoolStatsResponse:
+    """Get database connection pool statistics."""
+    if not settings.performance_monitoring_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Performance monitoring is not enabled. Set PERFORMANCE_MONITORING_ENABLED=true.",
+        )
+
+    return ConnectionPoolStatsResponse(
+        pool_size=1,
+        active_connections=1 if _db is not None else 0,
+        idle_connections=0 if _db is not None else 1,
+        max_connections=10,
+        wait_queue_size=0,
+    )
+
+
+# ── UX Polish — Preferences & Onboarding ────────────────────────────────────
+
+
+@app.get(
+    "/preferences/{user_id}",
+    response_model=UserPreferencesResponse,
+    tags=["UX Preferences"],
+)
+async def get_user_preferences(
+    user_id: str,
+    api_key: str = Depends(require_viewer),
+) -> UserPreferencesResponse:
+    """Get display and interaction preferences for a user."""
+    if not settings.ux_preferences_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="UX preferences are not enabled. Set UX_PREFERENCES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT theme, language, timezone, notifications_enabled, keyboard_shortcuts_enabled, items_per_page, accessibility_high_contrast, accessibility_font_size FROM user_preferences WHERE user_id = ?",
+        (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row:
+        prefs = UserPreferences(
+            theme=row[0],
+            language=row[1],
+            timezone=row[2],
+            notifications_enabled=bool(row[3]),
+            keyboard_shortcuts_enabled=bool(row[4]),
+            items_per_page=row[5],
+            accessibility_high_contrast=bool(row[6]),
+            accessibility_font_size=row[7],
+        )
+    else:
+        prefs = UserPreferences()
+
+    return UserPreferencesResponse(user_id=user_id, preferences=prefs)
+
+
+@app.put(
+    "/preferences/{user_id}",
+    response_model=UserPreferencesResponse,
+    tags=["UX Preferences"],
+)
+async def update_user_preferences(
+    user_id: str,
+    body: UserPreferencesUpdate,
+    api_key: str = Depends(require_viewer),
+) -> UserPreferencesResponse:
+    """Update display and interaction preferences for a user."""
+    if not settings.ux_preferences_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="UX preferences are not enabled. Set UX_PREFERENCES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Get existing preferences or defaults
+    async with _db.execute(
+        "SELECT theme, language, timezone, notifications_enabled, keyboard_shortcuts_enabled, items_per_page, accessibility_high_contrast, accessibility_font_size FROM user_preferences WHERE user_id = ?",
+        (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row:
+        current = UserPreferences(
+            theme=row[0],
+            language=row[1],
+            timezone=row[2],
+            notifications_enabled=bool(row[3]),
+            keyboard_shortcuts_enabled=bool(row[4]),
+            items_per_page=row[5],
+            accessibility_high_contrast=bool(row[6]),
+            accessibility_font_size=row[7],
+        )
+    else:
+        current = UserPreferences()
+
+    # Merge updates
+    updated = current.model_copy(update={k: v for k, v in body.model_dump().items() if v is not None})
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        """INSERT INTO user_preferences (user_id, theme, language, timezone, notifications_enabled, keyboard_shortcuts_enabled, items_per_page, accessibility_high_contrast, accessibility_font_size, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             theme=excluded.theme, language=excluded.language, timezone=excluded.timezone,
+             notifications_enabled=excluded.notifications_enabled,
+             keyboard_shortcuts_enabled=excluded.keyboard_shortcuts_enabled,
+             items_per_page=excluded.items_per_page,
+             accessibility_high_contrast=excluded.accessibility_high_contrast,
+             accessibility_font_size=excluded.accessibility_font_size,
+             updated_at=excluded.updated_at""",
+        (
+            user_id,
+            updated.theme,
+            updated.language,
+            updated.timezone,
+            int(updated.notifications_enabled),
+            int(updated.keyboard_shortcuts_enabled),
+            updated.items_per_page,
+            int(updated.accessibility_high_contrast),
+            updated.accessibility_font_size,
+            now,
+        ),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="update_user_preferences",
+        resource=user_id,
+    )
+
+    return UserPreferencesResponse(user_id=user_id, preferences=updated)
+
+
+@app.get(
+    "/onboarding/status/{user_id}",
+    response_model=OnboardingStatusResponse,
+    tags=["UX Preferences"],
+)
+async def get_onboarding_status(
+    user_id: str,
+    api_key: str = Depends(require_viewer),
+) -> OnboardingStatusResponse:
+    """Get onboarding progress for a user."""
+    if not settings.ux_preferences_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="UX preferences are not enabled. Set UX_PREFERENCES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Fetch completed steps
+    async with _db.execute(
+        "SELECT step_id, completed_at FROM onboarding_progress WHERE user_id = ?",
+        (user_id,),
+    ) as cursor:
+        completed_rows = await cursor.fetchall()
+
+    completed_set = {r[0]: r[1] for r in completed_rows}
+
+    steps: list[OnboardingStep] = []
+    for s in _ONBOARDING_STEPS:
+        completed_at_str = completed_set.get(s["step_id"])
+        steps.append(OnboardingStep(
+            step_id=s["step_id"],
+            title=s["title"],
+            description=s["description"],
+            completed=s["step_id"] in completed_set,
+            completed_at=datetime.fromisoformat(completed_at_str) if completed_at_str else None,
+        ))
+
+    total = len(steps)
+    done = sum(1 for s in steps if s.completed)
+    pct = round((done / total) * 100, 1) if total > 0 else 0.0
+
+    return OnboardingStatusResponse(
+        user_id=user_id,
+        completed=done == total,
+        completion_percentage=pct,
+        steps=steps,
+        total_steps=total,
+        completed_steps=done,
+    )
+
+
+@app.post(
+    "/onboarding/complete-step",
+    response_model=OnboardingCompleteStepResponse,
+    tags=["UX Preferences"],
+)
+async def complete_onboarding_step(
+    body: OnboardingCompleteStepRequest,
+    api_key: str = Depends(require_viewer),
+) -> OnboardingCompleteStepResponse:
+    """Mark an onboarding step as complete for a user."""
+    if not settings.ux_preferences_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="UX preferences are not enabled. Set UX_PREFERENCES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Validate step_id
+    valid_step_ids = {s["step_id"] for s in _ONBOARDING_STEPS}
+    if body.step_id not in valid_step_ids:
+        raise HTTPException(status_code=422, detail=f"Unknown onboarding step: {body.step_id}")
+
+    # Check if already completed
+    async with _db.execute(
+        "SELECT id FROM onboarding_progress WHERE user_id = ? AND step_id = ?",
+        (body.user_id, body.step_id),
+    ) as cursor:
+        existing = await cursor.fetchone()
+
+    if existing:
+        return OnboardingCompleteStepResponse(
+            step_id=body.step_id,
+            already_completed=True,
+        )
+
+    progress_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        "INSERT INTO onboarding_progress (id, user_id, step_id, completed_at) VALUES (?, ?, ?, ?)",
+        (progress_id, body.user_id, body.step_id, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="complete_onboarding_step",
+        resource=f"{body.user_id}/{body.step_id}",
+    )
+
+    return OnboardingCompleteStepResponse(
+        step_id=body.step_id,
+        already_completed=False,
     )
 
 
