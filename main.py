@@ -13,6 +13,7 @@ import csv
 import hashlib
 import hmac
 import io
+import sqlite3 as _sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -3384,7 +3385,7 @@ async def bulk_add_tags(
                     (ticket_id, normalised, now),
                 )
                 added_count += 1
-            except Exception:  # noqa: BLE001
+            except _sqlite3.IntegrityError:
                 pass
 
         results.append(BulkOperationResult(
@@ -3453,7 +3454,7 @@ async def create_agent_skill(
             ),
         )
         await _db.commit()
-    except Exception:  # noqa: BLE001
+    except _sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail=f"Agent '{body.agent_id}' already exists")
 
     await audit.record(
