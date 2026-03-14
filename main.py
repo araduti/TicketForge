@@ -21,7 +21,7 @@ from typing import AsyncGenerator
 import httpx
 import structlog
 import structlog.stdlib
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -48,6 +48,10 @@ from models import (
     CategoryResult,
     ChatRequest,
     ChatResponse,
+    CSATAnalyticsResponse,
+    CSATRecord,
+    CSATResponse,
+    CSATSubmission,
     DailyTrend,
     DetectDuplicatesRequest,
     DetectDuplicatesResponse,
@@ -89,6 +93,7 @@ from models import (
     TicketStatus,
     TicketStatusUpdate,
     WebhookIngest,
+    WebSocketEvent,
 )
 from notifications import send_notifications
 from ticket_processor import TicketProcessor
@@ -121,6 +126,42 @@ limiter = Limiter(key_func=get_remote_address)
 _processor: TicketProcessor | None = None
 _detector: AutomationDetector | None = None
 _db: aiosqlite.Connection | None = None
+
+
+# ── WebSocket connection manager ──────────────────────────────────────────────
+
+class ConnectionManager:
+    """Manages active WebSocket connections for real-time event broadcasting."""
+
+    def __init__(self) -> None:
+        self._connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self._connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self._connections:
+            self._connections.remove(websocket)
+
+    async def broadcast(self, event: WebSocketEvent) -> None:
+        """Broadcast an event to all connected clients, removing stale connections."""
+        payload = event.model_dump_json()
+        stale: list[WebSocket] = []
+        for ws in self._connections:
+            try:
+                await ws.send_text(payload)
+            except Exception:  # noqa: BLE001
+                stale.append(ws)
+        for ws in stale:
+            self.disconnect(ws)
+
+    @property
+    def active_connections(self) -> int:
+        return len(self._connections)
+
+
+ws_manager = ConnectionManager()
 
 DB_INIT_SQL = """
 CREATE TABLE IF NOT EXISTS processed_tickets (
@@ -161,6 +202,16 @@ CREATE TABLE IF NOT EXISTS kb_articles (
     tags TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS csat_ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id TEXT NOT NULL,
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    comment TEXT NOT NULL DEFAULT '',
+    reporter_email TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL,
+    UNIQUE(ticket_id)
 );
 """
 
@@ -340,6 +391,19 @@ async def analyse_ticket(
     # Fire-and-forget notifications if priority/SLA warrants it
     asyncio.create_task(send_notifications(enriched, settings))
 
+    # Broadcast real-time WebSocket event
+    if settings.websocket_notifications_enabled and ws_manager.active_connections:
+        asyncio.create_task(ws_manager.broadcast(WebSocketEvent(
+            event_type="ticket_created",
+            ticket_id=enriched.ticket_id,
+            data={
+                "category": enriched.category.category,
+                "priority": enriched.priority.priority.value,
+                "sentiment": enriched.sentiment.sentiment.value,
+                "sla_status": enriched.sla.status.value,
+            },
+        )))
+
     if _db:
         await audit.record(
             _db,
@@ -482,6 +546,14 @@ async def update_ticket_status(
     )
     await _db.commit()
 
+    # Broadcast real-time WebSocket event
+    if settings.websocket_notifications_enabled and ws_manager.active_connections:
+        asyncio.create_task(ws_manager.broadcast(WebSocketEvent(
+            event_type="status_changed",
+            ticket_id=ticket_id,
+            data={"new_status": body.status.value},
+        )))
+
     await audit.record(
         _db,
         api_key=api_key,
@@ -574,8 +646,9 @@ async def suggest_response(
         raise HTTPException(status_code=404, detail="Ticket not found in cache")
 
     # Build context for the LLM
-    from prompts import SUGGEST_RESPONSE_PROMPT, SYSTEM_PROMPT  # noqa: PLC0415
+    from prompts import SUGGEST_RESPONSE_PROMPT, SYSTEM_PROMPT, get_i18n_response_prompt  # noqa: PLC0415
 
+    detected_lang = row[7] or "en"
     prompt = SUGGEST_RESPONSE_PROMPT.format(
         ticket_id=row[0],
         title=row[5] or "",  # summary used as title (original title not persisted)
@@ -588,6 +661,10 @@ async def suggest_response(
         kb_articles="None available",
         root_cause="Not determined",
     )
+
+    # Append i18n language instruction for non-English tickets
+    if settings.i18n_enabled:
+        prompt += get_i18n_response_prompt(detected_lang)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -1565,6 +1642,241 @@ async def portal_submit_ticket(
         message=f"Your ticket {ticket_id} has been submitted successfully.",
         suggested_articles=suggested_articles,
     )
+
+
+# ── Internationalisation (i18n) endpoint ─────────────────────────────────────
+
+@app.get(
+    "/i18n/languages",
+    tags=["i18n"],
+)
+async def list_supported_languages(
+    api_key: str = Depends(require_viewer),
+):
+    """
+    List all supported languages for i18n-aware prompt generation.
+    When i18n is enabled, TicketForge will instruct the LLM to respond
+    in the ticket's detected language.
+    Requires viewer role or higher.
+    """
+    if not settings.i18n_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Internationalisation is not enabled. Set I18N_ENABLED=true.",
+        )
+    from prompts import LANGUAGE_NAMES  # noqa: PLC0415
+
+    return {
+        "success": True,
+        "default_language": settings.i18n_default_language,
+        "supported_languages": LANGUAGE_NAMES,
+        "total": len(LANGUAGE_NAMES),
+    }
+
+
+# ── CSAT (Customer Satisfaction) endpoints ───────────────────────────────────
+
+@app.post(
+    "/tickets/{ticket_id}/csat",
+    response_model=CSATResponse,
+    tags=["csat"],
+    status_code=201,
+)
+async def submit_csat(
+    ticket_id: str,
+    body: CSATSubmission,
+    api_key: str = Depends(require_viewer),
+) -> CSATResponse:
+    """
+    Submit a CSAT (Customer Satisfaction) rating for a resolved ticket.
+    Rating scale: 1 (very dissatisfied) to 5 (very satisfied).
+    Requires viewer role or higher.
+    """
+    if not settings.csat_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="CSAT surveys are not enabled. Set CSAT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Verify ticket exists
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    now = datetime.now(tz=timezone.utc)
+    await _db.execute(
+        """
+        INSERT OR REPLACE INTO csat_ratings
+            (ticket_id, rating, comment, reporter_email, submitted_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (ticket_id, body.rating, body.comment, body.reporter_email, now.isoformat()),
+    )
+    await _db.commit()
+
+    # Fetch the inserted record
+    async with _db.execute(
+        "SELECT id, ticket_id, rating, comment, reporter_email, submitted_at "
+        "FROM csat_ratings WHERE ticket_id = ?",
+        (ticket_id,),
+    ) as cursor:
+        r = await cursor.fetchone()
+
+    record = CSATRecord(
+        id=r[0],
+        ticket_id=r[1],
+        rating=r[2],
+        comment=r[3],
+        reporter_email=r[4],
+        submitted_at=datetime.fromisoformat(r[5]),
+    )
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="submit_csat",
+        resource=ticket_id,
+        detail=f"rating={body.rating}",
+    )
+    return CSATResponse(data=record)
+
+
+@app.get(
+    "/tickets/{ticket_id}/csat",
+    response_model=CSATResponse,
+    tags=["csat"],
+)
+async def get_csat(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> CSATResponse:
+    """
+    Retrieve the CSAT rating for a specific ticket.
+    Returns null data if no rating has been submitted.
+    Requires viewer role or higher.
+    """
+    if not settings.csat_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="CSAT surveys are not enabled. Set CSAT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id, ticket_id, rating, comment, reporter_email, submitted_at "
+        "FROM csat_ratings WHERE ticket_id = ?",
+        (ticket_id,),
+    ) as cursor:
+        r = await cursor.fetchone()
+
+    if r is None:
+        return CSATResponse(data=None)
+
+    return CSATResponse(
+        data=CSATRecord(
+            id=r[0],
+            ticket_id=r[1],
+            rating=r[2],
+            comment=r[3],
+            reporter_email=r[4],
+            submitted_at=datetime.fromisoformat(r[5]),
+        )
+    )
+
+
+@app.get(
+    "/analytics/csat",
+    response_model=CSATAnalyticsResponse,
+    tags=["csat"],
+)
+async def get_csat_analytics(
+    api_key: str = Depends(require_analyst),
+) -> CSATAnalyticsResponse:
+    """
+    Aggregate CSAT analytics: average score, distribution, and recent comments.
+    Requires analyst or admin role.
+    """
+    if not settings.csat_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="CSAT surveys are not enabled. Set CSAT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Total ratings and average
+    async with _db.execute(
+        "SELECT COUNT(*), COALESCE(AVG(rating), 0) FROM csat_ratings"
+    ) as cursor:
+        total_row = await cursor.fetchone()
+    total_ratings = total_row[0]
+    average_rating = round(total_row[1], 2)
+
+    # Distribution
+    distribution: dict[str, int] = {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
+    async with _db.execute(
+        "SELECT rating, COUNT(*) FROM csat_ratings GROUP BY rating ORDER BY rating"
+    ) as cursor:
+        async for row in cursor:
+            distribution[str(row[0])] = row[1]
+
+    # Recent comments (last 10 with non-empty comments)
+    recent_comments: list[dict] = []
+    async with _db.execute(
+        "SELECT ticket_id, rating, comment, submitted_at FROM csat_ratings "
+        "WHERE comment != '' ORDER BY submitted_at DESC LIMIT 10"
+    ) as cursor:
+        async for row in cursor:
+            recent_comments.append({
+                "ticket_id": row[0],
+                "rating": row[1],
+                "comment": row[2],
+                "submitted_at": row[3],
+            })
+
+    return CSATAnalyticsResponse(
+        total_ratings=total_ratings,
+        average_rating=average_rating,
+        rating_distribution=distribution,
+        recent_comments=recent_comments,
+    )
+
+
+# ── WebSocket notifications endpoint ────────────────────────────────────────
+
+@app.websocket("/ws/notifications")
+async def websocket_notifications(websocket: WebSocket) -> None:
+    """
+    WebSocket endpoint for real-time ticket event notifications.
+    Authenticate via X-Api-Key query parameter: /ws/notifications?api_key=<key>
+    Events: ticket_created, status_changed, sla_breach
+    """
+    if not settings.websocket_notifications_enabled:
+        await websocket.close(code=1008, reason="WebSocket notifications are not enabled")
+        return
+
+    # Authenticate via query parameter
+    api_key = websocket.query_params.get("api_key", "")
+    if api_key not in settings.api_keys:
+        await websocket.close(code=1008, reason="Invalid API key")
+        return
+
+    await ws_manager.connect(websocket)
+    log.info("websocket.connected", connections=ws_manager.active_connections)
+    try:
+        while True:
+            # Keep connection alive; client can send pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+        log.info("websocket.disconnected", connections=ws_manager.active_connections)
 
 
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
