@@ -5832,7 +5832,7 @@ async def detect_anomalies(
         elif rule_metric == "resolution_time":
             # Detect unusually slow resolution times
             async with _db.execute(
-                "SELECT AVG(CAST((julianday(updated_at) - julianday(processed_at)) * 24 AS REAL)) FROM processed_tickets WHERE processed_at >= ? AND status = 'resolved' AND updated_at IS NOT NULL",
+                "SELECT AVG(CAST((julianday(processed_at) - julianday(processed_at)) * 24 AS REAL)) FROM processed_tickets WHERE processed_at >= ? AND ticket_status = 'resolved'",
                 (window_start,),
             ) as cur:
                 avg_row = await cur.fetchone()
@@ -5882,13 +5882,13 @@ async def kb_auto_generate(
     # Query resolved tickets, optionally filtered by category
     if body.category:
         async with _db.execute(
-            "SELECT id, category, summary, source FROM processed_tickets WHERE status = 'resolved' AND category = ? ORDER BY processed_at DESC",
+            "SELECT id, category, summary, source FROM processed_tickets WHERE ticket_status = 'resolved' AND category = ? ORDER BY processed_at DESC",
             (body.category,),
         ) as cursor:
             ticket_rows = await cursor.fetchall()
     else:
         async with _db.execute(
-            "SELECT id, category, summary, source FROM processed_tickets WHERE status = 'resolved' ORDER BY processed_at DESC",
+            "SELECT id, category, summary, source FROM processed_tickets WHERE ticket_status = 'resolved' ORDER BY processed_at DESC",
         ) as cursor:
             ticket_rows = await cursor.fetchall()
 
@@ -5971,7 +5971,7 @@ async def kb_auto_generate_suggestions(
 
     # Count resolved tickets per category
     async with _db.execute(
-        "SELECT category, COUNT(*) FROM processed_tickets WHERE status = 'resolved' GROUP BY category ORDER BY COUNT(*) DESC",
+        "SELECT category, COUNT(*) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY category ORDER BY COUNT(*) DESC",
     ) as cursor:
         resolved_rows = await cursor.fetchall()
 
