@@ -820,3 +820,198 @@ class SavedFilterListResponse(BaseModel):
     success: bool = True
     filters: list[SavedFilterRecord] = Field(default_factory=list)
 
+
+# ── Phase 8: SLA breach prediction ──────────────────────────────────────────
+
+
+class SLAPrediction(BaseModel):
+    """A single ticket's SLA breach prediction."""
+
+    ticket_id: str = Field(..., description="Ticket ID")
+    category: str = Field(default="", description="Ticket category")
+    priority: str = Field(default="", description="Ticket priority")
+    current_age_hours: float = Field(default=0.0, description="Hours since ticket creation")
+    sla_target_hours: float = Field(default=0.0, description="SLA target in hours")
+    predicted_breach_probability: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Probability of SLA breach (0.0-1.0)",
+    )
+    estimated_resolution_hours: float = Field(default=0.0, description="Estimated hours to resolve")
+    risk_level: str = Field(default="low", description="Risk level: low, medium, high, critical")
+
+
+class SLAPredictionResponse(BaseModel):
+    """Response for SLA breach prediction analytics."""
+
+    success: bool = True
+    predictions: list[SLAPrediction] = Field(default_factory=list)
+    total_open_tickets: int = Field(default=0)
+    high_risk_count: int = Field(default=0)
+    generated_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Phase 8: Response templates ─────────────────────────────────────────────
+
+
+class ResponseTemplateCreate(BaseModel):
+    """POST /response-templates — create a response template."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Template name")
+    category: str = Field(..., min_length=1, max_length=100, description="Ticket category this template applies to")
+    content: str = Field(..., min_length=1, max_length=5000, description="Template content text")
+    language: str = Field(default="en", max_length=10, description="Template language code")
+    tags: list[str] = Field(default_factory=list, description="Optional tags for filtering")
+
+
+class ResponseTemplateRecord(BaseModel):
+    """Stored response template record."""
+
+    id: str = Field(..., description="Unique template ID")
+    name: str
+    category: str
+    content: str
+    language: str = Field(default="en")
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ResponseTemplateResponse(BaseModel):
+    success: bool = True
+    data: ResponseTemplateRecord
+
+
+class ResponseTemplateListResponse(BaseModel):
+    success: bool = True
+    templates: list[ResponseTemplateRecord] = Field(default_factory=list)
+
+
+# ── Phase 8: Ticket activity timeline ───────────────────────────────────────
+
+
+class ActivityType(str, Enum):
+    """Types of ticket activity events."""
+
+    comment = "comment"
+    status_change = "status_change"
+    tag_added = "tag_added"
+    tag_removed = "tag_removed"
+    merged = "merged"
+    assigned = "assigned"
+    created = "created"
+
+
+class TicketCommentCreate(BaseModel):
+    """POST /tickets/{id}/comments — add an internal comment."""
+
+    content: str = Field(..., min_length=1, max_length=5000, description="Comment text")
+    is_internal: bool = Field(default=True, description="Whether this is an internal-only comment")
+
+
+class TicketActivityRecord(BaseModel):
+    """A single activity entry in the ticket timeline."""
+
+    id: str = Field(..., description="Unique activity ID")
+    ticket_id: str = Field(default="")
+    activity_type: ActivityType
+    content: str = Field(default="", description="Activity description or comment text")
+    performed_by: str = Field(default="", description="API key hash of the actor")
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TicketActivityResponse(BaseModel):
+    success: bool = True
+    ticket_id: str = Field(default="")
+    activities: list[TicketActivityRecord] = Field(default_factory=list)
+
+
+class TicketCommentResponse(BaseModel):
+    success: bool = True
+    data: TicketActivityRecord
+
+
+# ── Phase 8: Bulk operations ───────────────────────────────────────────────
+
+
+class BulkStatusUpdate(BaseModel):
+    """POST /tickets/bulk/status — update status for multiple tickets."""
+
+    ticket_ids: list[str] = Field(..., min_length=1, max_length=100, description="List of ticket IDs")
+    status: TicketStatus = Field(..., description="New status to apply")
+
+
+class BulkTagUpdate(BaseModel):
+    """POST /tickets/bulk/tags — add tags to multiple tickets."""
+
+    ticket_ids: list[str] = Field(..., min_length=1, max_length=100, description="List of ticket IDs")
+    tags: list[str] = Field(..., min_length=1, max_length=20, description="Tags to add")
+
+
+class BulkOperationResult(BaseModel):
+    """Result for a single ticket in a bulk operation."""
+
+    ticket_id: str
+    success: bool = True
+    detail: str = Field(default="")
+
+
+class BulkOperationResponse(BaseModel):
+    success: bool = True
+    total: int = Field(default=0)
+    succeeded: int = Field(default=0)
+    failed: int = Field(default=0)
+    results: list[BulkOperationResult] = Field(default_factory=list)
+
+
+# ── Phase 8: Agent skill-based routing ──────────────────────────────────────
+
+
+class AgentSkillCreate(BaseModel):
+    """POST /agent-skills — register an agent with skills."""
+
+    agent_id: str = Field(..., min_length=1, max_length=100, description="Unique agent identifier")
+    name: str = Field(..., min_length=1, max_length=200, description="Agent display name")
+    categories: list[str] = Field(default_factory=list, description="Categories the agent specialises in")
+    priorities: list[str] = Field(default_factory=list, description="Priority levels the agent handles")
+    languages: list[str] = Field(default_factory=list, description="Languages the agent supports")
+    max_concurrent_tickets: int = Field(default=10, ge=1, le=100, description="Maximum concurrent tickets")
+
+
+class AgentSkillRecord(BaseModel):
+    """Stored agent skill record."""
+
+    id: str = Field(..., description="Unique record ID")
+    agent_id: str
+    name: str
+    categories: list[str] = Field(default_factory=list)
+    priorities: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    max_concurrent_tickets: int = Field(default=10)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class AgentSkillResponse(BaseModel):
+    success: bool = True
+    data: AgentSkillRecord
+
+
+class AgentSkillListResponse(BaseModel):
+    success: bool = True
+    agents: list[AgentSkillRecord] = Field(default_factory=list)
+
+
+class AgentRecommendation(BaseModel):
+    """An agent recommendation for a ticket."""
+
+    agent_id: str
+    name: str
+    match_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Skill match score")
+    matching_skills: list[str] = Field(default_factory=list, description="Skills that matched")
+
+
+class AgentRecommendationResponse(BaseModel):
+    success: bool = True
+    ticket_id: str = Field(default="")
+    recommendations: list[AgentRecommendation] = Field(default_factory=list)
+

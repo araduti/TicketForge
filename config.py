@@ -319,6 +319,36 @@ class Settings(BaseSettings):
         description="Enable saved ticket filters (POST/GET/DELETE /filters)",
     )
 
+    # ── Phase 8: SLA breach prediction ──────────────────────────────────────────
+    sla_prediction_enabled: bool = Field(
+        default=False,
+        description="Enable SLA breach prediction analytics (GET /analytics/sla-predictions)",
+    )
+
+    # ── Phase 8: Response templates ─────────────────────────────────────────────
+    response_templates_enabled: bool = Field(
+        default=False,
+        description="Enable response templates (POST/GET/DELETE /response-templates)",
+    )
+
+    # ── Phase 8: Ticket timeline ───────────────────────────────────────────────
+    ticket_timeline_enabled: bool = Field(
+        default=False,
+        description="Enable ticket activity timeline (GET /tickets/{id}/activity, POST /tickets/{id}/comments)",
+    )
+
+    # ── Phase 8: Bulk operations ───────────────────────────────────────────────
+    bulk_operations_enabled: bool = Field(
+        default=False,
+        description="Enable bulk ticket operations (POST /tickets/bulk/status, POST /tickets/bulk/tags)",
+    )
+
+    # ── Phase 8: Skill-based routing ───────────────────────────────────────────
+    skill_routing_enabled: bool = Field(
+        default=False,
+        description="Enable agent skill-based routing (POST/GET /agent-skills, GET /tickets/{id}/recommended-agents)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

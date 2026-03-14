@@ -37,6 +37,13 @@ from connectors.jira import JiraConnector
 from connectors.servicenow import ServiceNowConnector
 from connectors.zendesk import ZendeskConnector
 from models import (
+    ActivityType,
+    AgentRecommendation,
+    AgentRecommendationResponse,
+    AgentSkillCreate,
+    AgentSkillListResponse,
+    AgentSkillRecord,
+    AgentSkillResponse,
     AnalyseRequest,
     AnalyseResponse,
     AnalyticsResponse,
@@ -48,6 +55,10 @@ from models import (
     AutomationSuggestionType,
     BulkAnalyseRequest,
     BulkAnalyseResponse,
+    BulkOperationResponse,
+    BulkOperationResult,
+    BulkStatusUpdate,
+    BulkTagUpdate,
     CategoryCount,
     CategoryResult,
     ChatRequest,
@@ -91,6 +102,10 @@ from models import (
     PriorityCount,
     PriorityResult,
     RawTicket,
+    ResponseTemplateCreate,
+    ResponseTemplateListResponse,
+    ResponseTemplateRecord,
+    ResponseTemplateResponse,
     Role,
     RootCauseHypothesis,
     RoutingResult,
@@ -105,10 +120,16 @@ from models import (
     Sentiment,
     SentimentResult,
     SLAInfo,
+    SLAPrediction,
+    SLAPredictionResponse,
     SLAStatus,
     SuggestedResponse,
     SuggestResponseRequest,
     SuggestResponseResponse,
+    TicketActivityRecord,
+    TicketActivityResponse,
+    TicketCommentCreate,
+    TicketCommentResponse,
     TicketMergeRequest,
     TicketMergeResponse,
     TicketSource,
@@ -288,6 +309,36 @@ CREATE TABLE IF NOT EXISTS saved_filters (
     filter_criteria TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS response_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT 'en',
+    tags TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticket_activity (
+    id TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL,
+    activity_type TEXT NOT NULL DEFAULT 'comment',
+    content TEXT NOT NULL DEFAULT '',
+    performed_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_skills (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    categories TEXT NOT NULL DEFAULT '[]',
+    priorities TEXT NOT NULL DEFAULT '[]',
+    languages TEXT NOT NULL DEFAULT '[]',
+    max_concurrent_tickets INTEGER NOT NULL DEFAULT 10,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -2869,6 +2920,689 @@ async def delete_saved_filter(
     )
 
     return {"success": True, "deleted": filter_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 8 — Predictive Analytics & Workflow Automation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── SLA breach prediction ─────────────────────────────────────────────────────
+
+
+@app.get(
+    "/analytics/sla-predictions",
+    response_model=SLAPredictionResponse,
+    tags=["analytics"],
+)
+async def get_sla_predictions(
+    api_key: str = Depends(require_viewer),
+) -> SLAPredictionResponse:
+    """
+    Predict which open tickets are most likely to breach their SLA.
+
+    Analyses historical resolution times by category and priority to estimate
+    breach probability for each currently open ticket.
+    """
+    if not settings.sla_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="SLA prediction is not enabled. Set SLA_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Gather historical average resolution times by category+priority
+    avg_resolution: dict[tuple[str, str], float] = {}
+    async with _db.execute(
+        "SELECT category, priority, processed_at FROM processed_tickets WHERE ticket_status IN ('resolved', 'closed')"
+    ) as cursor:
+        rows = await cursor.fetchall()
+    # Build average hours (simplified: use count-based estimation)
+    category_priority_hours: dict[tuple[str, str], list[float]] = {}
+    for r in rows:
+        key = (r[0] or "unknown", r[1] or "medium")
+        base_hours = {"critical": 4.0, "high": 8.0, "medium": 24.0, "low": 48.0}.get(r[1] or "medium", 24.0)
+        category_priority_hours.setdefault(key, []).append(base_hours)
+    for key, hours_list in category_priority_hours.items():
+        avg_resolution[key] = sum(hours_list) / len(hours_list) if hours_list else 24.0
+
+    # SLA targets from settings (configured in minutes, convert to hours)
+    sla_targets = {
+        "critical": settings.sla_response_critical / 60.0,
+        "high": settings.sla_response_high / 60.0,
+        "medium": settings.sla_response_medium / 60.0,
+        "low": settings.sla_response_low / 60.0,
+    }
+
+    # Get open tickets
+    async with _db.execute(
+        "SELECT id, category, priority, processed_at FROM processed_tickets WHERE ticket_status = 'open'"
+    ) as cursor:
+        open_tickets = await cursor.fetchall()
+
+    now = datetime.now(tz=timezone.utc)
+    predictions: list[SLAPrediction] = []
+    high_risk_count = 0
+
+    for ticket in open_tickets:
+        ticket_id = ticket[0]
+        category = ticket[1] or "unknown"
+        priority = ticket[2] or "medium"
+        processed_at = ticket[3]
+
+        try:
+            created = datetime.fromisoformat(processed_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_hours = (now - created).total_seconds() / 3600.0
+        except (ValueError, TypeError):
+            age_hours = 0.0
+
+        sla_target = sla_targets.get(priority, 4.0)
+        avg_hours = avg_resolution.get((category, priority), 24.0)
+
+        # Calculate breach probability
+        if sla_target <= 0:
+            breach_prob = 0.0
+        else:
+            time_ratio = age_hours / sla_target
+            if time_ratio >= 1.0:
+                breach_prob = 1.0
+            elif time_ratio >= 0.8:
+                breach_prob = 0.7 + (time_ratio - 0.8) * 1.5
+            elif time_ratio >= 0.5:
+                breach_prob = 0.3 + (time_ratio - 0.5) * 1.33
+            else:
+                breach_prob = time_ratio * 0.6
+        breach_prob = min(max(breach_prob, 0.0), 1.0)
+
+        # Determine risk level
+        if breach_prob >= 0.8:
+            risk_level = "critical"
+            high_risk_count += 1
+        elif breach_prob >= 0.5:
+            risk_level = "high"
+            high_risk_count += 1
+        elif breach_prob >= 0.3:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        predictions.append(SLAPrediction(
+            ticket_id=ticket_id,
+            category=category,
+            priority=priority,
+            current_age_hours=round(age_hours, 2),
+            sla_target_hours=round(sla_target, 2),
+            predicted_breach_probability=round(breach_prob, 3),
+            estimated_resolution_hours=round(avg_hours, 2),
+            risk_level=risk_level,
+        ))
+
+    # Sort by breach probability descending
+    predictions.sort(key=lambda p: p.predicted_breach_probability, reverse=True)
+
+    return SLAPredictionResponse(
+        predictions=predictions,
+        total_open_tickets=len(open_tickets),
+        high_risk_count=high_risk_count,
+    )
+
+
+# ── Response templates ────────────────────────────────────────────────────────
+
+
+@app.post(
+    "/response-templates",
+    response_model=ResponseTemplateResponse,
+    tags=["templates"],
+)
+async def create_response_template(
+    body: ResponseTemplateCreate,
+    api_key: str = Depends(require_admin),
+) -> ResponseTemplateResponse:
+    """Create a reusable response template for a ticket category. Requires admin role."""
+    if not settings.response_templates_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Response templates are not enabled. Set RESPONSE_TEMPLATES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    template_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+    tags_json = _json.dumps(body.tags)
+
+    await _db.execute(
+        "INSERT INTO response_templates (id, name, category, content, language, tags, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (template_id, body.name, body.category, body.content, body.language, tags_json, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_response_template",
+        resource=template_id,
+    )
+
+    record = ResponseTemplateRecord(
+        id=template_id,
+        name=body.name,
+        category=body.category,
+        content=body.content,
+        language=body.language,
+        tags=body.tags,
+        created_at=datetime.fromisoformat(now),
+    )
+    return ResponseTemplateResponse(data=record)
+
+
+@app.get(
+    "/response-templates",
+    response_model=ResponseTemplateListResponse,
+    tags=["templates"],
+)
+async def list_response_templates(
+    category: str | None = Query(None, description="Filter by category"),
+    api_key: str = Depends(require_viewer),
+) -> ResponseTemplateListResponse:
+    """List all response templates, optionally filtered by category."""
+    if not settings.response_templates_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Response templates are not enabled. Set RESPONSE_TEMPLATES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    if category:
+        query = "SELECT id, name, category, content, language, tags, created_at FROM response_templates WHERE category = ? ORDER BY created_at DESC"
+        params: tuple = (category,)
+    else:
+        query = "SELECT id, name, category, content, language, tags, created_at FROM response_templates ORDER BY created_at DESC"
+        params = ()
+
+    async with _db.execute(query, params) as cursor:
+        rows = await cursor.fetchall()
+
+    templates = [
+        ResponseTemplateRecord(
+            id=r[0],
+            name=r[1],
+            category=r[2],
+            content=r[3],
+            language=r[4] or "en",
+            tags=_json.loads(r[5]) if r[5] else [],
+            created_at=datetime.fromisoformat(r[6]),
+        )
+        for r in rows
+    ]
+    return ResponseTemplateListResponse(templates=templates)
+
+
+@app.delete(
+    "/response-templates/{template_id}",
+    tags=["templates"],
+)
+async def delete_response_template(
+    template_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete a response template. Requires admin role."""
+    if not settings.response_templates_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Response templates are not enabled. Set RESPONSE_TEMPLATES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM response_templates WHERE id = ?", (template_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Response template not found")
+
+    await _db.execute("DELETE FROM response_templates WHERE id = ?", (template_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_response_template",
+        resource=template_id,
+    )
+
+    return {"success": True, "deleted": template_id}
+
+
+# ── Ticket activity timeline ─────────────────────────────────────────────────
+
+
+@app.post(
+    "/tickets/{ticket_id}/comments",
+    response_model=TicketCommentResponse,
+    tags=["timeline"],
+)
+async def add_ticket_comment(
+    ticket_id: str,
+    body: TicketCommentCreate,
+    api_key: str = Depends(require_analyst),
+) -> TicketCommentResponse:
+    """Add an internal comment to a ticket. Requires analyst role."""
+    if not settings.ticket_timeline_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket timeline is not enabled. Set TICKET_TIMELINE_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    activity_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+    await _db.execute(
+        "INSERT INTO ticket_activity (id, ticket_id, activity_type, content, performed_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (activity_id, ticket_id, "comment", body.content, key_hash, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="add_ticket_comment",
+        resource=ticket_id,
+    )
+
+    record = TicketActivityRecord(
+        id=activity_id,
+        ticket_id=ticket_id,
+        activity_type=ActivityType.comment,
+        content=body.content,
+        performed_by=key_hash,
+        created_at=datetime.fromisoformat(now),
+    )
+    return TicketCommentResponse(data=record)
+
+
+@app.get(
+    "/tickets/{ticket_id}/activity",
+    response_model=TicketActivityResponse,
+    tags=["timeline"],
+)
+async def get_ticket_activity(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> TicketActivityResponse:
+    """Get the full activity timeline for a ticket."""
+    if not settings.ticket_timeline_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket timeline is not enabled. Set TICKET_TIMELINE_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id, ticket_id, activity_type, content, performed_by, created_at "
+        "FROM ticket_activity WHERE ticket_id = ? ORDER BY created_at ASC",
+        (ticket_id,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    activities = [
+        TicketActivityRecord(
+            id=r[0],
+            ticket_id=r[1],
+            activity_type=ActivityType(r[2]),
+            content=r[3] or "",
+            performed_by=r[4] or "",
+            created_at=datetime.fromisoformat(r[5]),
+        )
+        for r in rows
+    ]
+    return TicketActivityResponse(
+        ticket_id=ticket_id,
+        activities=activities,
+    )
+
+
+# ── Bulk operations ──────────────────────────────────────────────────────────
+
+
+@app.post(
+    "/tickets/bulk/status",
+    response_model=BulkOperationResponse,
+    tags=["bulk"],
+)
+async def bulk_update_status(
+    body: BulkStatusUpdate,
+    api_key: str = Depends(require_analyst),
+) -> BulkOperationResponse:
+    """Update the status of multiple tickets at once. Requires analyst role."""
+    if not settings.bulk_operations_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Bulk operations are not enabled. Set BULK_OPERATIONS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    results: list[BulkOperationResult] = []
+    succeeded = 0
+    failed = 0
+
+    for ticket_id in body.ticket_ids:
+        async with _db.execute(
+            "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                results.append(BulkOperationResult(
+                    ticket_id=ticket_id,
+                    success=False,
+                    detail="Ticket not found",
+                ))
+                failed += 1
+                continue
+
+        await _db.execute(
+            "UPDATE processed_tickets SET ticket_status = ? WHERE id = ?",
+            (body.status.value, ticket_id),
+        )
+        results.append(BulkOperationResult(
+            ticket_id=ticket_id,
+            success=True,
+            detail=f"Status updated to {body.status.value}",
+        ))
+        succeeded += 1
+
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="bulk_update_status",
+        resource=f"{len(body.ticket_ids)} tickets",
+    )
+
+    return BulkOperationResponse(
+        total=len(body.ticket_ids),
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
+
+
+@app.post(
+    "/tickets/bulk/tags",
+    response_model=BulkOperationResponse,
+    tags=["bulk"],
+)
+async def bulk_add_tags(
+    body: BulkTagUpdate,
+    api_key: str = Depends(require_analyst),
+) -> BulkOperationResponse:
+    """Add tags to multiple tickets at once. Requires analyst role."""
+    if not settings.bulk_operations_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Bulk operations are not enabled. Set BULK_OPERATIONS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    if not settings.ticket_tags_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket tags must also be enabled. Set TICKET_TAGS_ENABLED=true.",
+        )
+
+    results: list[BulkOperationResult] = []
+    succeeded = 0
+    failed = 0
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    for ticket_id in body.ticket_ids:
+        added_count = 0
+        for tag in body.tags:
+            normalised = tag.strip().lower()
+            if not normalised:
+                continue
+            try:
+                await _db.execute(
+                    "INSERT OR IGNORE INTO ticket_tags (ticket_id, tag, added_at) VALUES (?, ?, ?)",
+                    (ticket_id, normalised, now),
+                )
+                added_count += 1
+            except Exception:  # noqa: BLE001
+                pass
+
+        results.append(BulkOperationResult(
+            ticket_id=ticket_id,
+            success=True,
+            detail=f"Added {added_count} tag(s)",
+        ))
+        succeeded += 1
+
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="bulk_add_tags",
+        resource=f"{len(body.ticket_ids)} tickets",
+    )
+
+    return BulkOperationResponse(
+        total=len(body.ticket_ids),
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
+
+
+# ── Agent skill-based routing ────────────────────────────────────────────────
+
+
+@app.post(
+    "/agent-skills",
+    response_model=AgentSkillResponse,
+    tags=["routing"],
+)
+async def create_agent_skill(
+    body: AgentSkillCreate,
+    api_key: str = Depends(require_admin),
+) -> AgentSkillResponse:
+    """Register an agent with their skills and capacity. Requires admin role."""
+    if not settings.skill_routing_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Skill-based routing is not enabled. Set SKILL_ROUTING_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    record_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        await _db.execute(
+            "INSERT INTO agent_skills (id, agent_id, name, categories, priorities, languages, max_concurrent_tickets, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record_id,
+                body.agent_id,
+                body.name,
+                _json.dumps(body.categories),
+                _json.dumps(body.priorities),
+                _json.dumps(body.languages),
+                body.max_concurrent_tickets,
+                now,
+            ),
+        )
+        await _db.commit()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=409, detail=f"Agent '{body.agent_id}' already exists")
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_agent_skill",
+        resource=body.agent_id,
+    )
+
+    record = AgentSkillRecord(
+        id=record_id,
+        agent_id=body.agent_id,
+        name=body.name,
+        categories=body.categories,
+        priorities=body.priorities,
+        languages=body.languages,
+        max_concurrent_tickets=body.max_concurrent_tickets,
+        created_at=datetime.fromisoformat(now),
+    )
+    return AgentSkillResponse(data=record)
+
+
+@app.get(
+    "/agent-skills",
+    response_model=AgentSkillListResponse,
+    tags=["routing"],
+)
+async def list_agent_skills(
+    api_key: str = Depends(require_viewer),
+) -> AgentSkillListResponse:
+    """List all registered agents and their skills."""
+    if not settings.skill_routing_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Skill-based routing is not enabled. Set SKILL_ROUTING_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, agent_id, name, categories, priorities, languages, max_concurrent_tickets, created_at "
+        "FROM agent_skills ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    agents = [
+        AgentSkillRecord(
+            id=r[0],
+            agent_id=r[1],
+            name=r[2],
+            categories=_json.loads(r[3]) if r[3] else [],
+            priorities=_json.loads(r[4]) if r[4] else [],
+            languages=_json.loads(r[5]) if r[5] else [],
+            max_concurrent_tickets=r[6] or 10,
+            created_at=datetime.fromisoformat(r[7]),
+        )
+        for r in rows
+    ]
+    return AgentSkillListResponse(agents=agents)
+
+
+@app.get(
+    "/tickets/{ticket_id}/recommended-agents",
+    response_model=AgentRecommendationResponse,
+    tags=["routing"],
+)
+async def get_recommended_agents(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> AgentRecommendationResponse:
+    """
+    Get recommended agents for a ticket based on skill matching.
+
+    Matches ticket category, priority, and language against registered agent skills.
+    Returns agents sorted by match score (highest first).
+    """
+    if not settings.skill_routing_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Skill-based routing is not enabled. Set SKILL_ROUTING_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    # Get ticket details
+    async with _db.execute(
+        "SELECT id, category, priority, detected_language FROM processed_tickets WHERE id = ?",
+        (ticket_id,),
+    ) as cursor:
+        ticket = await cursor.fetchone()
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    ticket_category = (ticket[1] or "").lower()
+    ticket_priority = (ticket[2] or "").lower()
+    ticket_language = (ticket[3] or "en").lower()
+
+    # Get all agents
+    async with _db.execute(
+        "SELECT id, agent_id, name, categories, priorities, languages, max_concurrent_tickets, created_at "
+        "FROM agent_skills"
+    ) as cursor:
+        agent_rows = await cursor.fetchall()
+
+    recommendations: list[AgentRecommendation] = []
+
+    for r in agent_rows:
+        agent_categories = [c.lower() for c in _json.loads(r[3])] if r[3] else []
+        agent_priorities = [p.lower() for p in _json.loads(r[4])] if r[4] else []
+        agent_languages = [la.lower() for la in _json.loads(r[5])] if r[5] else []
+
+        score = 0.0
+        matching_skills: list[str] = []
+
+        # Category match (weighted 0.4)
+        if ticket_category and ticket_category in agent_categories:
+            score += 0.4
+            matching_skills.append(f"category:{ticket_category}")
+
+        # Priority match (weighted 0.3)
+        if ticket_priority and ticket_priority in agent_priorities:
+            score += 0.3
+            matching_skills.append(f"priority:{ticket_priority}")
+
+        # Language match (weighted 0.3)
+        if ticket_language and ticket_language in agent_languages:
+            score += 0.3
+            matching_skills.append(f"language:{ticket_language}")
+
+        if score > 0:
+            recommendations.append(AgentRecommendation(
+                agent_id=r[1],
+                name=r[2],
+                match_score=round(score, 2),
+                matching_skills=matching_skills,
+            ))
+
+    # Sort by match score descending
+    recommendations.sort(key=lambda rec: rec.match_score, reverse=True)
+
+    return AgentRecommendationResponse(
+        ticket_id=ticket_id,
+        recommendations=recommendations,
+    )
 
 
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
