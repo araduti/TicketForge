@@ -289,6 +289,36 @@ class Settings(BaseSettings):
         description="Automatically create OpsGenie alerts for critical tickets or SLA breaches",
     )
 
+    # ── Scheduled reports ────────────────────────────────────────────────────
+    scheduled_reports_enabled: bool = Field(
+        default=False,
+        description="Enable scheduled analytics reports (POST/GET/DELETE /reports/schedules)",
+    )
+
+    # ── Ticket merging ────────────────────────────────────────────────────────
+    ticket_merging_enabled: bool = Field(
+        default=False,
+        description="Enable ticket merging endpoint (POST /tickets/merge)",
+    )
+
+    # ── Custom fields ─────────────────────────────────────────────────────────
+    custom_fields_enabled: bool = Field(
+        default=False,
+        description="Enable custom field definitions (POST/GET /custom-fields)",
+    )
+
+    # ── Ticket tags ───────────────────────────────────────────────────────────
+    ticket_tags_enabled: bool = Field(
+        default=False,
+        description="Enable ticket tagging (POST/DELETE/GET /tickets/{id}/tags)",
+    )
+
+    # ── Saved filters ─────────────────────────────────────────────────────────
+    saved_filters_enabled: bool = Field(
+        default=False,
+        description="Enable saved ticket filters (POST/GET/DELETE /filters)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

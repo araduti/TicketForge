@@ -671,3 +671,152 @@ class EscalationStatusResponse(BaseModel):
     opsgenie_configured: bool = Field(default=False, description="Whether OpsGenie is configured")
     auto_escalate_enabled: bool = Field(default=False, description="Whether auto-escalation on SLA breach is enabled")
 
+
+# ── Phase 7: Scheduled reports ───────────────────────────────────────────────
+
+class ReportFrequency(str, Enum):
+    """Frequency options for scheduled analytics reports."""
+    daily = "daily"
+    weekly = "weekly"
+    monthly = "monthly"
+
+
+class ScheduledReportCreate(BaseModel):
+    """POST /reports/schedules — create a new scheduled report."""
+    name: str = Field(..., min_length=1, max_length=200, description="Human-readable report name")
+    frequency: ReportFrequency = Field(..., description="How often the report should be generated")
+    webhook_url: str = Field(..., min_length=1, max_length=2000, description="URL to deliver report payload")
+    include_categories: bool = Field(default=True, description="Include category breakdown")
+    include_priorities: bool = Field(default=True, description="Include priority breakdown")
+    include_sla: bool = Field(default=True, description="Include SLA summary")
+    include_csat: bool = Field(default=True, description="Include CSAT summary")
+    enabled: bool = Field(default=True, description="Whether the schedule is active")
+
+
+class ScheduledReportRecord(BaseModel):
+    """Stored scheduled report configuration."""
+    id: str = Field(..., description="Unique schedule ID")
+    name: str = Field(..., description="Report name")
+    frequency: ReportFrequency
+    webhook_url: str = Field(..., description="Delivery webhook URL")
+    include_categories: bool = Field(default=True)
+    include_priorities: bool = Field(default=True)
+    include_sla: bool = Field(default=True)
+    include_csat: bool = Field(default=True)
+    enabled: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ScheduledReportResponse(BaseModel):
+    success: bool = True
+    data: ScheduledReportRecord
+
+
+class ScheduledReportListResponse(BaseModel):
+    success: bool = True
+    schedules: list[ScheduledReportRecord] = Field(default_factory=list)
+
+
+# ── Phase 7: Ticket merging ─────────────────────────────────────────────────
+
+class TicketMergeRequest(BaseModel):
+    """POST /tickets/merge — merge duplicate tickets."""
+    primary_ticket_id: str = Field(..., description="Ticket to keep as the canonical record")
+    duplicate_ticket_ids: list[str] = Field(..., min_length=1, max_length=50, description="Tickets to merge into the primary")
+
+
+class MergedTicketRecord(BaseModel):
+    """Record of a ticket merge operation."""
+    primary_ticket_id: str
+    merged_ticket_ids: list[str] = Field(default_factory=list)
+    merged_at: datetime = Field(default_factory=_utcnow)
+    merged_by: str = Field(default="", description="API key hash of the user who merged")
+
+
+class TicketMergeResponse(BaseModel):
+    success: bool = True
+    data: MergedTicketRecord
+
+
+# ── Phase 7: Custom fields ──────────────────────────────────────────────────
+
+class CustomFieldType(str, Enum):
+    """Supported custom field value types."""
+    text = "text"
+    number = "number"
+    boolean = "boolean"
+    select = "select"
+
+
+class CustomFieldDefinition(BaseModel):
+    """POST /custom-fields — define a new custom field."""
+    name: str = Field(..., min_length=1, max_length=100, description="Field name (unique identifier)")
+    field_type: CustomFieldType = Field(..., description="Data type of the field")
+    description: str = Field(default="", max_length=500)
+    required: bool = Field(default=False, description="Whether the field is required on new tickets")
+    options: list[str] = Field(default_factory=list, description="Options for 'select' type fields")
+
+
+class CustomFieldRecord(BaseModel):
+    """Stored custom field definition."""
+    id: str = Field(..., description="Unique field ID")
+    name: str
+    field_type: CustomFieldType
+    description: str = Field(default="")
+    required: bool = Field(default=False)
+    options: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class CustomFieldResponse(BaseModel):
+    success: bool = True
+    data: CustomFieldRecord
+
+
+class CustomFieldListResponse(BaseModel):
+    success: bool = True
+    fields: list[CustomFieldRecord] = Field(default_factory=list)
+
+
+# ── Phase 7: Ticket tags ────────────────────────────────────────────────────
+
+class TicketTagRequest(BaseModel):
+    """POST /tickets/{id}/tags — add tags to a ticket."""
+    tags: list[str] = Field(..., min_length=1, max_length=20, description="Tags to add")
+
+
+class TicketTagsResponse(BaseModel):
+    success: bool = True
+    ticket_id: str = Field(default="")
+    tags: list[str] = Field(default_factory=list)
+
+
+# ── Phase 7: Saved filters ──────────────────────────────────────────────────
+
+class SavedFilterCreate(BaseModel):
+    """POST /filters — create a named ticket filter."""
+    name: str = Field(..., min_length=1, max_length=200, description="Filter name")
+    filter_criteria: dict[str, Any] = Field(
+        ...,
+        description="Filter criteria: category, priority, status, tags, date_from, date_to",
+    )
+
+
+class SavedFilterRecord(BaseModel):
+    """Stored saved filter."""
+    id: str = Field(..., description="Unique filter ID")
+    name: str
+    filter_criteria: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=_utcnow)
+    created_by: str = Field(default="", description="API key hash of the creator")
+
+
+class SavedFilterResponse(BaseModel):
+    success: bool = True
+    data: SavedFilterRecord
+
+
+class SavedFilterListResponse(BaseModel):
+    success: bool = True
+    filters: list[SavedFilterRecord] = Field(default_factory=list)
+

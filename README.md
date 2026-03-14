@@ -43,6 +43,11 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **Outbound Webhook Events** | Structured webhook event payloads (Zapier/Make/n8n compatible) for ticket lifecycle events with HMAC signing |
 | **PagerDuty Escalation** | Auto-create PagerDuty incidents for critical tickets and SLA breaches via Events API v2 |
 | **OpsGenie Escalation** | Auto-create OpsGenie alerts for critical tickets and SLA breaches via Alert API |
+| **Scheduled Reports** | `POST /reports/schedules` configures automated recurring analytics delivery via webhook (daily/weekly/monthly) |
+| **Ticket Merging** | `POST /tickets/merge` consolidates duplicate tickets — duplicates are closed with merge history preserved |
+| **Custom Fields** | `POST /custom-fields` defines organisation-specific metadata fields (text/number/boolean/select) for tickets |
+| **Ticket Tags** | `POST /tickets/{id}/tags` adds labels for organising tickets; tags are normalised and deduplicated |
+| **Saved Filters** | `POST /filters` creates named ticket query filters for quick access by analysts and admins |
 
 ---
 
@@ -540,6 +545,11 @@ All settings are read from environment variables (or a `.env` file):
 | `PAGERDUTY_AUTO_ESCALATE` | `false` | Auto-create PagerDuty incidents for critical tickets or SLA breaches |
 | `OPSGENIE_API_KEY` | _(empty)_ | OpsGenie Alert API key |
 | `OPSGENIE_AUTO_ESCALATE` | `false` | Auto-create OpsGenie alerts for critical tickets or SLA breaches |
+| `SCHEDULED_REPORTS_ENABLED` | `false` | Enable scheduled analytics report endpoints (`/reports/schedules`) |
+| `TICKET_MERGING_ENABLED` | `false` | Enable ticket merging endpoint (`POST /tickets/merge`) |
+| `CUSTOM_FIELDS_ENABLED` | `false` | Enable custom field definition endpoints (`/custom-fields`) |
+| `TICKET_TAGS_ENABLED` | `false` | Enable ticket tagging endpoints (`/tickets/{id}/tags`) |
+| `SAVED_FILTERS_ENABLED` | `false` | Enable saved filter endpoints (`/filters`) |
 
 ---
 
