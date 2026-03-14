@@ -1218,3 +1218,140 @@ class MacroExecuteResponse(BaseModel):
     ticket_id: str = Field(default="")
     actions_performed: list[str] = Field(default_factory=list)
 
+
+# ── Phase 10a: Team dashboards ────────────────────────────────────────────────
+
+class TeamMemberCreate(BaseModel):
+    """POST /teams — add an agent to a team."""
+
+    agent_id: str = Field(..., min_length=1, max_length=200, description="Agent identifier")
+    team_name: str = Field(..., min_length=1, max_length=200, description="Team name")
+    role: str = Field(default="member", max_length=100, description="Role within the team (e.g. lead, member)")
+
+
+class TeamMemberRecord(BaseModel):
+    """Stored team member record."""
+
+    id: str = Field(..., description="Unique record ID")
+    agent_id: str
+    team_name: str
+    role: str = "member"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class TeamMemberResponse(BaseModel):
+    success: bool = True
+    data: TeamMemberRecord
+
+
+class TeamMemberListResponse(BaseModel):
+    success: bool = True
+    members: list[TeamMemberRecord] = Field(default_factory=list)
+
+
+class TeamPerformanceMetrics(BaseModel):
+    """Performance metrics for a single team."""
+
+    team_name: str = ""
+    total_tickets: int = 0
+    open_tickets: int = 0
+    resolved_tickets: int = 0
+    avg_resolution_hours: float = 0.0
+    member_count: int = 0
+    members: list[str] = Field(default_factory=list)
+
+
+class TeamDashboardResponse(BaseModel):
+    success: bool = True
+    teams: list[TeamPerformanceMetrics] = Field(default_factory=list)
+    total_agents: int = 0
+
+
+# ── Phase 10a: Enhanced SLA prediction ────────────────────────────────────────
+
+class SLARiskThresholdCreate(BaseModel):
+    """POST /sla-risk-thresholds — configure risk thresholds per priority."""
+
+    priority: str = Field(..., description="Priority level (critical, high, medium, low)")
+    warning_threshold: float = Field(default=0.5, ge=0.0, le=1.0, description="Warning risk threshold (0.0-1.0)")
+    critical_threshold: float = Field(default=0.8, ge=0.0, le=1.0, description="Critical risk threshold (0.0-1.0)")
+
+
+class SLARiskThresholdRecord(BaseModel):
+    """Stored SLA risk threshold record."""
+
+    id: str = Field(..., description="Unique threshold ID")
+    priority: str
+    warning_threshold: float = 0.5
+    critical_threshold: float = 0.8
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class SLARiskThresholdResponse(BaseModel):
+    success: bool = True
+    data: SLARiskThresholdRecord
+
+
+class SLARiskThresholdListResponse(BaseModel):
+    success: bool = True
+    thresholds: list[SLARiskThresholdRecord] = Field(default_factory=list)
+
+
+class SLARiskFactor(BaseModel):
+    """Individual risk factor contributing to breach probability."""
+
+    factor: str = Field(default="", description="Risk factor name")
+    weight: float = Field(default=0.0, description="Weight of this factor (0.0-1.0)")
+    description: str = Field(default="", description="Human-readable description")
+
+
+class EnhancedSLAPrediction(BaseModel):
+    """Enhanced SLA prediction with multi-factor analysis."""
+
+    ticket_id: str = ""
+    category: str = ""
+    priority: str = ""
+    current_age_hours: float = 0.0
+    sla_target_hours: float = 0.0
+    predicted_breach_probability: float = 0.0
+    risk_level: str = "low"
+    risk_factors: list[SLARiskFactor] = Field(default_factory=list)
+    recommended_action: str = ""
+
+
+class EnhancedSLARiskResponse(BaseModel):
+    success: bool = True
+    predictions: list[EnhancedSLAPrediction] = Field(default_factory=list)
+    total_open_tickets: int = 0
+    high_risk_count: int = 0
+    critical_risk_count: int = 0
+
+
+# ── Phase 10a: Volume forecasting ────────────────────────────────────────────
+
+class VolumeForecastPoint(BaseModel):
+    """A single forecast data point."""
+
+    date: str = Field(default="", description="Date in YYYY-MM-DD format")
+    predicted_volume: int = 0
+    lower_bound: int = 0
+    upper_bound: int = 0
+
+
+class CategoryForecast(BaseModel):
+    """Volume forecast for a specific category."""
+
+    category: str = ""
+    historical_avg: float = 0.0
+    trend_direction: str = Field(default="stable", description="stable, increasing, or decreasing")
+    forecast_points: list[VolumeForecastPoint] = Field(default_factory=list)
+
+
+class VolumeForecastResponse(BaseModel):
+    success: bool = True
+    forecast_days: int = 7
+    overall_trend: str = Field(default="stable", description="Overall volume trend")
+    daily_average: float = 0.0
+    category_forecasts: list[CategoryForecast] = Field(default_factory=list)
+    forecast_points: list[VolumeForecastPoint] = Field(default_factory=list)
+

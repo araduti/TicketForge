@@ -379,6 +379,24 @@ class Settings(BaseSettings):
         description="Enable macros for common ticket operations (POST/GET/DELETE /macros, POST /macros/{id}/execute)",
     )
 
+    # ── Phase 10a: Team dashboards ───────────────────────────────────────────
+    team_dashboards_enabled: bool = Field(
+        default=False,
+        description="Enable team dashboards (POST/GET /teams, GET /analytics/team-dashboard)",
+    )
+
+    # ── Phase 10a: Enhanced SLA prediction ────────────────────────────────────
+    enhanced_sla_prediction_enabled: bool = Field(
+        default=False,
+        description="Enable enhanced SLA prediction with configurable risk thresholds (GET /analytics/sla-risk, POST/GET /sla-risk-thresholds)",
+    )
+
+    # ── Phase 10a: Volume forecasting ─────────────────────────────────────────
+    volume_forecasting_enabled: bool = Field(
+        default=False,
+        description="Enable volume forecasting with historical trend analysis (GET /analytics/volume-forecast)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
