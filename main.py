@@ -17,7 +17,7 @@ import sqlite3 as _sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 
 import httpx
@@ -48,7 +48,19 @@ from models import (
     AnalyseRequest,
     AnalyseResponse,
     AnalyticsResponse,
+    ApprovalDecision,
+    ApprovalListResponse,
+    ApprovalRecord,
+    ApprovalRequestCreate,
+    ApprovalResponse,
+    ApprovalStatus,
     AuditLogResponse,
+    AutomationRuleAction,
+    AutomationRuleCondition,
+    AutomationRuleCreate,
+    AutomationRuleListResponse,
+    AutomationRuleRecord,
+    AutomationRuleResponse,
     AutoResolveRequest,
     AutoResolveResponse,
     AutoResolveResult,
@@ -64,6 +76,11 @@ from models import (
     CategoryResult,
     ChatRequest,
     ChatResponse,
+    ContactCreate,
+    ContactListResponse,
+    ContactRecord,
+    ContactResponse,
+    ContactTicketsResponse,
     CSATAnalyticsResponse,
     CSATRecord,
     CSATResponse,
@@ -91,6 +108,12 @@ from models import (
     KBSearchRequest,
     KBSearchResponse,
     KBSearchResult,
+    MacroAction,
+    MacroCreate,
+    MacroExecuteResponse,
+    MacroListResponse,
+    MacroRecord,
+    MacroResponse,
     MergedTicketRecord,
     MonitoringResponse,
     MultiAgentStatusResponse,
@@ -131,6 +154,9 @@ from models import (
     TicketActivityResponse,
     TicketCommentCreate,
     TicketCommentResponse,
+    TicketLockCreate,
+    TicketLockRecord,
+    TicketLockResponse,
     TicketMergeRequest,
     TicketMergeResponse,
     TicketSource,
@@ -339,6 +365,59 @@ CREATE TABLE IF NOT EXISTS agent_skills (
     priorities TEXT NOT NULL DEFAULT '[]',
     languages TEXT NOT NULL DEFAULT '[]',
     max_concurrent_tickets INTEGER NOT NULL DEFAULT 10,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS automation_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    conditions TEXT NOT NULL DEFAULT '[]',
+    actions TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticket_approvals (
+    id TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL,
+    approver TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    decision_comment TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ticket_locks (
+    id TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL UNIQUE,
+    agent_id TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    organisation TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contact_tickets (
+    contact_id TEXT NOT NULL,
+    ticket_id TEXT NOT NULL,
+    PRIMARY KEY (contact_id, ticket_id)
+);
+
+CREATE TABLE IF NOT EXISTS macros (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    actions TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
 );
 """
@@ -3607,6 +3686,858 @@ async def get_recommended_agents(
     return AgentRecommendationResponse(
         ticket_id=ticket_id,
         recommendations=recommendations,
+    )
+
+
+# ── Phase 9: Automation rules ────────────────────────────────────────────────
+
+
+@app.post(
+    "/automation-rules",
+    response_model=AutomationRuleResponse,
+    tags=["automation"],
+)
+async def create_automation_rule(
+    body: AutomationRuleCreate,
+    api_key: str = Depends(require_admin),
+) -> AutomationRuleResponse:
+    """Create a workflow automation rule. Requires admin role."""
+    if not settings.automation_rules_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Automation rules are not enabled. Set AUTOMATION_RULES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    rule_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    conditions_json = _json.dumps([c.model_dump() for c in body.conditions])
+    actions_json = _json.dumps([a.model_dump() for a in body.actions])
+
+    await _db.execute(
+        "INSERT INTO automation_rules (id, name, description, conditions, actions, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (rule_id, body.name, body.description, conditions_json, actions_json, 1 if body.enabled else 0, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_automation_rule",
+        resource=rule_id,
+    )
+
+    record = AutomationRuleRecord(
+        id=rule_id,
+        name=body.name,
+        description=body.description,
+        conditions=body.conditions,
+        actions=body.actions,
+        enabled=body.enabled,
+        created_at=datetime.fromisoformat(now),
+    )
+    return AutomationRuleResponse(data=record)
+
+
+@app.get(
+    "/automation-rules",
+    response_model=AutomationRuleListResponse,
+    tags=["automation"],
+)
+async def list_automation_rules(
+    api_key: str = Depends(require_viewer),
+) -> AutomationRuleListResponse:
+    """List all workflow automation rules."""
+    if not settings.automation_rules_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Automation rules are not enabled. Set AUTOMATION_RULES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, name, description, conditions, actions, enabled, created_at "
+        "FROM automation_rules ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    rules = [
+        AutomationRuleRecord(
+            id=r[0],
+            name=r[1],
+            description=r[2] or "",
+            conditions=[AutomationRuleCondition(**c) for c in _json.loads(r[3])] if r[3] else [],
+            actions=[AutomationRuleAction(**a) for a in _json.loads(r[4])] if r[4] else [],
+            enabled=bool(r[5]),
+            created_at=datetime.fromisoformat(r[6]),
+        )
+        for r in rows
+    ]
+    return AutomationRuleListResponse(rules=rules)
+
+
+@app.delete(
+    "/automation-rules/{rule_id}",
+    tags=["automation"],
+)
+async def delete_automation_rule(
+    rule_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete an automation rule. Requires admin role."""
+    if not settings.automation_rules_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Automation rules are not enabled. Set AUTOMATION_RULES_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM automation_rules WHERE id = ?", (rule_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Automation rule not found")
+
+    await _db.execute("DELETE FROM automation_rules WHERE id = ?", (rule_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_automation_rule",
+        resource=rule_id,
+    )
+
+    return {"success": True, "deleted": rule_id}
+
+
+# ── Phase 9: Approval workflows ──────────────────────────────────────────────
+
+
+@app.post(
+    "/tickets/{ticket_id}/approval-request",
+    response_model=ApprovalResponse,
+    tags=["approvals"],
+)
+async def create_approval_request(
+    ticket_id: str,
+    body: ApprovalRequestCreate,
+    api_key: str = Depends(require_analyst),
+) -> ApprovalResponse:
+    """Request approval for a ticket. Requires analyst role."""
+    if not settings.approval_workflows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Approval workflows are not enabled. Set APPROVAL_WORKFLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Verify ticket exists
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+    approval_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        "INSERT INTO ticket_approvals (id, ticket_id, approver, reason, status, decision_comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (approval_id, ticket_id, body.approver, body.reason, "pending", "", now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_approval_request",
+        resource=f"{ticket_id}:{approval_id}",
+    )
+
+    record = ApprovalRecord(
+        id=approval_id,
+        ticket_id=ticket_id,
+        approver=body.approver,
+        reason=body.reason,
+        status=ApprovalStatus.pending,
+        created_at=datetime.fromisoformat(now),
+    )
+    return ApprovalResponse(data=record)
+
+
+@app.post(
+    "/tickets/{ticket_id}/approve",
+    response_model=ApprovalResponse,
+    tags=["approvals"],
+)
+async def approve_ticket(
+    ticket_id: str,
+    body: ApprovalDecision,
+    api_key: str = Depends(require_admin),
+) -> ApprovalResponse:
+    """Approve or reject a pending approval. Requires admin role."""
+    if not settings.approval_workflows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Approval workflows are not enabled. Set APPROVAL_WORKFLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    if body.decision == ApprovalStatus.pending:
+        raise HTTPException(status_code=400, detail="Decision must be 'approved' or 'rejected'")
+
+    # Get the most recent pending approval for this ticket
+    async with _db.execute(
+        "SELECT id, ticket_id, approver, reason, status, decision_comment, created_at, decided_at "
+        "FROM ticket_approvals WHERE ticket_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+        (ticket_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="No pending approval found for this ticket")
+
+    decided_at = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        "UPDATE ticket_approvals SET status = ?, decision_comment = ?, decided_at = ? WHERE id = ?",
+        (body.decision.value, body.comment, decided_at, row[0]),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action=f"approval_{body.decision.value}",
+        resource=f"{ticket_id}:{row[0]}",
+    )
+
+    record = ApprovalRecord(
+        id=row[0],
+        ticket_id=ticket_id,
+        approver=row[2],
+        reason=row[3] or "",
+        status=body.decision,
+        decision_comment=body.comment,
+        created_at=datetime.fromisoformat(row[6]),
+        decided_at=datetime.fromisoformat(decided_at),
+    )
+    return ApprovalResponse(data=record)
+
+
+@app.get(
+    "/tickets/{ticket_id}/approvals",
+    response_model=ApprovalListResponse,
+    tags=["approvals"],
+)
+async def list_ticket_approvals(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> ApprovalListResponse:
+    """List all approvals for a ticket."""
+    if not settings.approval_workflows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Approval workflows are not enabled. Set APPROVAL_WORKFLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id, ticket_id, approver, reason, status, decision_comment, created_at, decided_at "
+        "FROM ticket_approvals WHERE ticket_id = ? ORDER BY created_at DESC",
+        (ticket_id,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    approvals = [
+        ApprovalRecord(
+            id=r[0],
+            ticket_id=r[1],
+            approver=r[2],
+            reason=r[3] or "",
+            status=ApprovalStatus(r[4]),
+            decision_comment=r[5] or "",
+            created_at=datetime.fromisoformat(r[6]),
+            decided_at=datetime.fromisoformat(r[7]) if r[7] else None,
+        )
+        for r in rows
+    ]
+    return ApprovalListResponse(approvals=approvals)
+
+
+# ── Phase 9: Agent collision detection ────────────────────────────────────────
+
+LOCK_DURATION_MINUTES = 15
+
+
+@app.post(
+    "/tickets/{ticket_id}/lock",
+    response_model=TicketLockResponse,
+    tags=["collision"],
+)
+async def lock_ticket(
+    ticket_id: str,
+    body: TicketLockCreate,
+    api_key: str = Depends(require_analyst),
+) -> TicketLockResponse:
+    """Acquire an exclusive lock on a ticket. Requires analyst role."""
+    if not settings.collision_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Collision detection is not enabled. Set COLLISION_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    now = datetime.now(tz=timezone.utc)
+    expires = now + timedelta(minutes=LOCK_DURATION_MINUTES)
+
+    # Remove expired locks first
+    await _db.execute(
+        "DELETE FROM ticket_locks WHERE expires_at < ?",
+        (now.isoformat(),),
+    )
+    await _db.commit()
+
+    lock_id = str(uuid.uuid4())
+
+    try:
+        await _db.execute(
+            "INSERT INTO ticket_locks (id, ticket_id, agent_id, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (lock_id, ticket_id, body.agent_id, now.isoformat(), expires.isoformat()),
+        )
+        await _db.commit()
+    except _sqlite3.IntegrityError:
+        # Ticket already locked — return existing lock info
+        async with _db.execute(
+            "SELECT id, ticket_id, agent_id, acquired_at, expires_at FROM ticket_locks WHERE ticket_id = ?",
+            (ticket_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row:
+            existing_lock = TicketLockRecord(
+                id=row[0],
+                ticket_id=row[1],
+                agent_id=row[2],
+                acquired_at=datetime.fromisoformat(row[3]),
+                expires_at=datetime.fromisoformat(row[4]),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ticket is already locked by agent '{existing_lock.agent_id}' until {existing_lock.expires_at.isoformat()}",
+            )
+        raise HTTPException(status_code=409, detail="Ticket is already locked")
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="lock_ticket",
+        resource=ticket_id,
+    )
+
+    record = TicketLockRecord(
+        id=lock_id,
+        ticket_id=ticket_id,
+        agent_id=body.agent_id,
+        acquired_at=now,
+        expires_at=expires,
+    )
+    return TicketLockResponse(data=record, locked=True)
+
+
+@app.delete(
+    "/tickets/{ticket_id}/lock",
+    tags=["collision"],
+)
+async def unlock_ticket(
+    ticket_id: str,
+    api_key: str = Depends(require_analyst),
+) -> dict:
+    """Release a lock on a ticket. Requires analyst role."""
+    if not settings.collision_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Collision detection is not enabled. Set COLLISION_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM ticket_locks WHERE ticket_id = ?", (ticket_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="No lock found for this ticket")
+
+    await _db.execute("DELETE FROM ticket_locks WHERE ticket_id = ?", (ticket_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="unlock_ticket",
+        resource=ticket_id,
+    )
+
+    return {"success": True, "unlocked": ticket_id}
+
+
+@app.get(
+    "/tickets/{ticket_id}/lock",
+    response_model=TicketLockResponse,
+    tags=["collision"],
+)
+async def get_ticket_lock(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> TicketLockResponse:
+    """Check the lock status of a ticket."""
+    if not settings.collision_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Collision detection is not enabled. Set COLLISION_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    now = datetime.now(tz=timezone.utc)
+
+    # Remove expired locks first
+    await _db.execute(
+        "DELETE FROM ticket_locks WHERE expires_at < ?",
+        (now.isoformat(),),
+    )
+    await _db.commit()
+
+    async with _db.execute(
+        "SELECT id, ticket_id, agent_id, acquired_at, expires_at FROM ticket_locks WHERE ticket_id = ?",
+        (ticket_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        return TicketLockResponse(locked=False)
+
+    record = TicketLockRecord(
+        id=row[0],
+        ticket_id=row[1],
+        agent_id=row[2],
+        acquired_at=datetime.fromisoformat(row[3]),
+        expires_at=datetime.fromisoformat(row[4]),
+    )
+    return TicketLockResponse(data=record, locked=True)
+
+
+# ── Phase 9: Contact management ──────────────────────────────────────────────
+
+
+@app.post(
+    "/contacts",
+    response_model=ContactResponse,
+    tags=["contacts"],
+)
+async def create_contact(
+    body: ContactCreate,
+    api_key: str = Depends(require_analyst),
+) -> ContactResponse:
+    """Register a customer contact. Requires analyst role."""
+    if not settings.contact_management_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Contact management is not enabled. Set CONTACT_MANAGEMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    contact_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        await _db.execute(
+            "INSERT INTO contacts (id, email, name, organisation, phone, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (contact_id, body.email, body.name, body.organisation, body.phone, body.notes, now),
+        )
+        await _db.commit()
+    except _sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"Contact with email '{body.email}' already exists")
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_contact",
+        resource=contact_id,
+    )
+
+    record = ContactRecord(
+        id=contact_id,
+        email=body.email,
+        name=body.name,
+        organisation=body.organisation,
+        phone=body.phone,
+        notes=body.notes,
+        created_at=datetime.fromisoformat(now),
+    )
+    return ContactResponse(data=record)
+
+
+@app.get(
+    "/contacts",
+    response_model=ContactListResponse,
+    tags=["contacts"],
+)
+async def list_contacts(
+    api_key: str = Depends(require_viewer),
+) -> ContactListResponse:
+    """List all customer contacts."""
+    if not settings.contact_management_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Contact management is not enabled. Set CONTACT_MANAGEMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id, email, name, organisation, phone, notes, created_at "
+        "FROM contacts ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    contacts = [
+        ContactRecord(
+            id=r[0],
+            email=r[1],
+            name=r[2],
+            organisation=r[3] or "",
+            phone=r[4] or "",
+            notes=r[5] or "",
+            created_at=datetime.fromisoformat(r[6]),
+        )
+        for r in rows
+    ]
+    return ContactListResponse(contacts=contacts)
+
+
+@app.post(
+    "/contacts/{contact_id}/tickets/{ticket_id}",
+    tags=["contacts"],
+)
+async def link_contact_ticket(
+    contact_id: str,
+    ticket_id: str,
+    api_key: str = Depends(require_analyst),
+) -> dict:
+    """Link a contact to a ticket. Requires analyst role."""
+    if not settings.contact_management_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Contact management is not enabled. Set CONTACT_MANAGEMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    # Verify contact exists
+    async with _db.execute(
+        "SELECT id FROM contacts WHERE id = ?", (contact_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+    try:
+        await _db.execute(
+            "INSERT INTO contact_tickets (contact_id, ticket_id) VALUES (?, ?)",
+            (contact_id, ticket_id),
+        )
+        await _db.commit()
+    except _sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Ticket is already linked to this contact")
+
+    return {"success": True, "contact_id": contact_id, "ticket_id": ticket_id}
+
+
+@app.get(
+    "/contacts/{contact_id}/tickets",
+    response_model=ContactTicketsResponse,
+    tags=["contacts"],
+)
+async def get_contact_tickets(
+    contact_id: str,
+    api_key: str = Depends(require_viewer),
+) -> ContactTicketsResponse:
+    """Get all tickets associated with a contact."""
+    if not settings.contact_management_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Contact management is not enabled. Set CONTACT_MANAGEMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Verify contact exists
+    async with _db.execute(
+        "SELECT id FROM contacts WHERE id = ?", (contact_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+    async with _db.execute(
+        "SELECT ticket_id FROM contact_tickets WHERE contact_id = ? ORDER BY ticket_id",
+        (contact_id,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    ticket_ids = [r[0] for r in rows]
+    return ContactTicketsResponse(contact_id=contact_id, ticket_ids=ticket_ids)
+
+
+# ── Phase 9: Macros ──────────────────────────────────────────────────────────
+
+
+@app.post(
+    "/macros",
+    response_model=MacroResponse,
+    tags=["macros"],
+)
+async def create_macro(
+    body: MacroCreate,
+    api_key: str = Depends(require_admin),
+) -> MacroResponse:
+    """Create a reusable macro. Requires admin role."""
+    if not settings.macros_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Macros are not enabled. Set MACROS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    macro_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    actions_json = _json.dumps([a.model_dump() for a in body.actions])
+
+    await _db.execute(
+        "INSERT INTO macros (id, name, description, actions, created_at) VALUES (?, ?, ?, ?, ?)",
+        (macro_id, body.name, body.description, actions_json, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_macro",
+        resource=macro_id,
+    )
+
+    record = MacroRecord(
+        id=macro_id,
+        name=body.name,
+        description=body.description,
+        actions=body.actions,
+        created_at=datetime.fromisoformat(now),
+    )
+    return MacroResponse(data=record)
+
+
+@app.get(
+    "/macros",
+    response_model=MacroListResponse,
+    tags=["macros"],
+)
+async def list_macros(
+    api_key: str = Depends(require_viewer),
+) -> MacroListResponse:
+    """List all macros."""
+    if not settings.macros_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Macros are not enabled. Set MACROS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, name, description, actions, created_at FROM macros ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    macros = [
+        MacroRecord(
+            id=r[0],
+            name=r[1],
+            description=r[2] or "",
+            actions=[MacroAction(**a) for a in _json.loads(r[3])] if r[3] else [],
+            created_at=datetime.fromisoformat(r[4]),
+        )
+        for r in rows
+    ]
+    return MacroListResponse(macros=macros)
+
+
+@app.delete(
+    "/macros/{macro_id}",
+    tags=["macros"],
+)
+async def delete_macro(
+    macro_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete a macro. Requires admin role."""
+    if not settings.macros_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Macros are not enabled. Set MACROS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM macros WHERE id = ?", (macro_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Macro not found")
+
+    await _db.execute("DELETE FROM macros WHERE id = ?", (macro_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_macro",
+        resource=macro_id,
+    )
+
+    return {"success": True, "deleted": macro_id}
+
+
+@app.post(
+    "/macros/{macro_id}/execute",
+    response_model=MacroExecuteResponse,
+    tags=["macros"],
+)
+async def execute_macro(
+    macro_id: str,
+    ticket_id: str = Query(..., description="Ticket ID to apply the macro to"),
+    api_key: str = Depends(require_analyst),
+) -> MacroExecuteResponse:
+    """Execute a macro on a ticket. Requires analyst role."""
+    if not settings.macros_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Macros are not enabled. Set MACROS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    # Get macro
+    async with _db.execute(
+        "SELECT id, name, description, actions, created_at FROM macros WHERE id = ?",
+        (macro_id,),
+    ) as cursor:
+        macro_row = await cursor.fetchone()
+
+    if macro_row is None:
+        raise HTTPException(status_code=404, detail="Macro not found")
+
+    # Verify ticket exists
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+    actions = _json.loads(macro_row[3]) if macro_row[3] else []
+    actions_performed: list[str] = []
+
+    for action in actions:
+        action_type = action.get("action_type", "")
+        params = action.get("parameters", {})
+
+        if action_type == "set_status" and "status" in params:
+            await _db.execute(
+                "UPDATE processed_tickets SET status = ? WHERE id = ?",
+                (params["status"], ticket_id),
+            )
+            actions_performed.append(f"set_status:{params['status']}")
+
+        elif action_type == "set_priority" and "priority" in params:
+            await _db.execute(
+                "UPDATE processed_tickets SET priority = ? WHERE id = ?",
+                (params["priority"], ticket_id),
+            )
+            actions_performed.append(f"set_priority:{params['priority']}")
+
+        elif action_type == "add_tag" and "tag" in params:
+            # Insert tag if ticket_tags table exists and tag feature is available
+            tag_id = str(uuid.uuid4())
+            now = datetime.now(tz=timezone.utc).isoformat()
+            try:
+                await _db.execute(
+                    "INSERT INTO ticket_tags (id, ticket_id, tag, created_at) VALUES (?, ?, ?, ?)",
+                    (tag_id, ticket_id, params["tag"], now),
+                )
+            except Exception:
+                pass  # Tag table might not exist if tags feature is disabled
+            actions_performed.append(f"add_tag:{params['tag']}")
+
+        elif action_type == "add_comment" and "text" in params:
+            comment_id = str(uuid.uuid4())
+            now = datetime.now(tz=timezone.utc).isoformat()
+            try:
+                await _db.execute(
+                    "INSERT INTO ticket_activity (id, ticket_id, activity_type, content, performed_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (comment_id, ticket_id, "comment", params["text"], "macro", now),
+                )
+            except Exception:
+                pass  # Activity table might not exist if timeline feature is disabled
+            actions_performed.append(f"add_comment:{params['text'][:50]}")
+
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="execute_macro",
+        resource=f"{macro_id}:{ticket_id}",
+    )
+
+    return MacroExecuteResponse(
+        ticket_id=ticket_id,
+        actions_performed=actions_performed,
     )
 
 
