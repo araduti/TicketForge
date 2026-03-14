@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import io
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncGenerator
@@ -55,6 +56,10 @@ from models import (
     CSATRecord,
     CSATResponse,
     CSATSubmission,
+    CustomFieldDefinition,
+    CustomFieldListResponse,
+    CustomFieldRecord,
+    CustomFieldResponse,
     DailyTrend,
     DetectDuplicatesRequest,
     DetectDuplicatesResponse,
@@ -74,6 +79,7 @@ from models import (
     KBSearchRequest,
     KBSearchResponse,
     KBSearchResult,
+    MergedTicketRecord,
     MonitoringResponse,
     MultiAgentStatusResponse,
     OutboundWebhookEvent,
@@ -88,6 +94,14 @@ from models import (
     Role,
     RootCauseHypothesis,
     RoutingResult,
+    SavedFilterCreate,
+    SavedFilterListResponse,
+    SavedFilterRecord,
+    SavedFilterResponse,
+    ScheduledReportCreate,
+    ScheduledReportListResponse,
+    ScheduledReportRecord,
+    ScheduledReportResponse,
     Sentiment,
     SentimentResult,
     SLAInfo,
@@ -95,9 +109,13 @@ from models import (
     SuggestedResponse,
     SuggestResponseRequest,
     SuggestResponseResponse,
+    TicketMergeRequest,
+    TicketMergeResponse,
     TicketSource,
     TicketStatus,
     TicketStatusUpdate,
+    TicketTagRequest,
+    TicketTagsResponse,
     VectorStoreStatusResponse,
     WebhookEventListResponse,
     WebhookEventType,
@@ -224,6 +242,52 @@ CREATE TABLE IF NOT EXISTS csat_ratings (
     reporter_email TEXT NOT NULL DEFAULT '',
     submitted_at TEXT NOT NULL,
     UNIQUE(ticket_id)
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_reports (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    frequency TEXT NOT NULL DEFAULT 'weekly',
+    webhook_url TEXT NOT NULL,
+    include_categories INTEGER NOT NULL DEFAULT 1,
+    include_priorities INTEGER NOT NULL DEFAULT 1,
+    include_sla INTEGER NOT NULL DEFAULT 1,
+    include_csat INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticket_merges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    primary_ticket_id TEXT NOT NULL,
+    merged_ticket_id TEXT NOT NULL,
+    merged_at TEXT NOT NULL,
+    merged_by TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS custom_fields (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    field_type TEXT NOT NULL DEFAULT 'text',
+    description TEXT NOT NULL DEFAULT '',
+    required INTEGER NOT NULL DEFAULT 0,
+    options TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticket_tags (
+    ticket_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (ticket_id, tag)
+);
+
+CREATE TABLE IF NOT EXISTS saved_filters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    filter_criteria TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -2198,6 +2262,613 @@ async def escalation_status(
             settings.pagerduty_auto_escalate or settings.opsgenie_auto_escalate
         ),
     )
+
+
+# ── Phase 7: Scheduled reports ───────────────────────────────────────────────
+
+@app.post(
+    "/reports/schedules",
+    response_model=ScheduledReportResponse,
+    tags=["reports"],
+)
+async def create_scheduled_report(
+    body: ScheduledReportCreate,
+    api_key: str = Depends(require_admin),
+) -> ScheduledReportResponse:
+    """
+    Create a new scheduled analytics report.
+
+    Reports are delivered via webhook at the configured frequency.
+    Requires admin role.
+    """
+    if not settings.scheduled_reports_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Scheduled reports are not enabled. Set SCHEDULED_REPORTS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    report_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+    await _db.execute(
+        """INSERT INTO scheduled_reports
+           (id, name, frequency, webhook_url, include_categories, include_priorities,
+            include_sla, include_csat, enabled, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            report_id,
+            body.name,
+            body.frequency.value,
+            body.webhook_url,
+            int(body.include_categories),
+            int(body.include_priorities),
+            int(body.include_sla),
+            int(body.include_csat),
+            int(body.enabled),
+            now,
+        ),
+    )
+    await _db.commit()
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="create_scheduled_report",
+            resource=report_id,
+        )
+
+    record = ScheduledReportRecord(
+        id=report_id,
+        name=body.name,
+        frequency=body.frequency,
+        webhook_url=body.webhook_url,
+        include_categories=body.include_categories,
+        include_priorities=body.include_priorities,
+        include_sla=body.include_sla,
+        include_csat=body.include_csat,
+        enabled=body.enabled,
+        created_at=datetime.fromisoformat(now),
+    )
+    return ScheduledReportResponse(data=record)
+
+
+@app.get(
+    "/reports/schedules",
+    response_model=ScheduledReportListResponse,
+    tags=["reports"],
+)
+async def list_scheduled_reports(
+    api_key: str = Depends(require_viewer),
+) -> ScheduledReportListResponse:
+    """List all scheduled report configurations."""
+    if not settings.scheduled_reports_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Scheduled reports are not enabled. Set SCHEDULED_REPORTS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id, name, frequency, webhook_url, include_categories, include_priorities, "
+        "include_sla, include_csat, enabled, created_at FROM scheduled_reports ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    schedules = [
+        ScheduledReportRecord(
+            id=r[0],
+            name=r[1],
+            frequency=r[2],
+            webhook_url=r[3],
+            include_categories=bool(r[4]),
+            include_priorities=bool(r[5]),
+            include_sla=bool(r[6]),
+            include_csat=bool(r[7]),
+            enabled=bool(r[8]),
+            created_at=datetime.fromisoformat(r[9]),
+        )
+        for r in rows
+    ]
+    return ScheduledReportListResponse(schedules=schedules)
+
+
+@app.delete(
+    "/reports/schedules/{schedule_id}",
+    tags=["reports"],
+)
+async def delete_scheduled_report(
+    schedule_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete a scheduled report. Requires admin role."""
+    if not settings.scheduled_reports_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Scheduled reports are not enabled. Set SCHEDULED_REPORTS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM scheduled_reports WHERE id = ?", (schedule_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Scheduled report not found")
+
+    await _db.execute("DELETE FROM scheduled_reports WHERE id = ?", (schedule_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_scheduled_report",
+        resource=schedule_id,
+    )
+
+    return {"success": True, "deleted": schedule_id}
+
+
+# ── Phase 7: Ticket merging ─────────────────────────────────────────────────
+
+@app.post(
+    "/tickets/merge",
+    response_model=TicketMergeResponse,
+    tags=["tickets"],
+)
+async def merge_tickets(
+    body: TicketMergeRequest,
+    api_key: str = Depends(require_admin),
+) -> TicketMergeResponse:
+    """
+    Merge duplicate tickets into a primary ticket.
+
+    The primary ticket is kept; duplicate tickets are marked as closed
+    with a merge reference. Requires admin role.
+    """
+    if not settings.ticket_merging_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket merging is not enabled. Set TICKET_MERGING_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Validate primary ticket exists
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (body.primary_ticket_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail=f"Primary ticket {body.primary_ticket_id} not found")
+
+    # Validate all duplicate tickets exist
+    merged_ids: list[str] = []
+    for dup_id in body.duplicate_ticket_ids:
+        if dup_id == body.primary_ticket_id:
+            continue  # skip if same as primary
+        async with _db.execute(
+            "SELECT id FROM processed_tickets WHERE id = ?", (dup_id,)
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"Duplicate ticket {dup_id} not found")
+        merged_ids.append(dup_id)
+
+    if not merged_ids:
+        raise HTTPException(status_code=400, detail="No valid duplicate tickets to merge")
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+    for dup_id in merged_ids:
+        # Record the merge
+        await _db.execute(
+            "INSERT INTO ticket_merges (primary_ticket_id, merged_ticket_id, merged_at, merged_by) VALUES (?, ?, ?, ?)",
+            (body.primary_ticket_id, dup_id, now, key_hash),
+        )
+        # Close the duplicate
+        await _db.execute(
+            "UPDATE processed_tickets SET ticket_status = 'closed' WHERE id = ?",
+            (dup_id,),
+        )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="merge_tickets",
+        resource=body.primary_ticket_id,
+    )
+
+    return TicketMergeResponse(
+        data=MergedTicketRecord(
+            primary_ticket_id=body.primary_ticket_id,
+            merged_ticket_ids=merged_ids,
+            merged_at=datetime.fromisoformat(now),
+            merged_by=key_hash,
+        )
+    )
+
+
+# ── Phase 7: Custom fields ──────────────────────────────────────────────────
+
+@app.post(
+    "/custom-fields",
+    response_model=CustomFieldResponse,
+    tags=["custom-fields"],
+)
+async def create_custom_field(
+    body: CustomFieldDefinition,
+    api_key: str = Depends(require_admin),
+) -> CustomFieldResponse:
+    """
+    Define a new custom field for tickets.
+
+    Custom fields extend ticket metadata with organisation-specific attributes.
+    Requires admin role.
+    """
+    if not settings.custom_fields_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom fields are not enabled. Set CUSTOM_FIELDS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Check for duplicate name
+    async with _db.execute(
+        "SELECT id FROM custom_fields WHERE name = ?", (body.name,)
+    ) as cursor:
+        if await cursor.fetchone() is not None:
+            raise HTTPException(status_code=409, detail=f"Custom field '{body.name}' already exists")
+
+    import json as _json  # noqa: PLC0415
+
+    field_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+    await _db.execute(
+        """INSERT INTO custom_fields (id, name, field_type, description, required, options, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            field_id,
+            body.name,
+            body.field_type.value,
+            body.description,
+            int(body.required),
+            _json.dumps(body.options),
+            now,
+        ),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_custom_field",
+        resource=field_id,
+    )
+
+    record = CustomFieldRecord(
+        id=field_id,
+        name=body.name,
+        field_type=body.field_type,
+        description=body.description,
+        required=body.required,
+        options=body.options,
+        created_at=datetime.fromisoformat(now),
+    )
+    return CustomFieldResponse(data=record)
+
+
+@app.get(
+    "/custom-fields",
+    response_model=CustomFieldListResponse,
+    tags=["custom-fields"],
+)
+async def list_custom_fields(
+    api_key: str = Depends(require_viewer),
+) -> CustomFieldListResponse:
+    """List all custom field definitions."""
+    if not settings.custom_fields_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom fields are not enabled. Set CUSTOM_FIELDS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, name, field_type, description, required, options, created_at "
+        "FROM custom_fields ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    fields = [
+        CustomFieldRecord(
+            id=r[0],
+            name=r[1],
+            field_type=r[2],
+            description=r[3],
+            required=bool(r[4]),
+            options=_json.loads(r[5]) if r[5] else [],
+            created_at=datetime.fromisoformat(r[6]),
+        )
+        for r in rows
+    ]
+    return CustomFieldListResponse(fields=fields)
+
+
+# ── Phase 7: Ticket tags ────────────────────────────────────────────────────
+
+@app.post(
+    "/tickets/{ticket_id}/tags",
+    response_model=TicketTagsResponse,
+    tags=["tags"],
+)
+async def add_ticket_tags(
+    ticket_id: str,
+    body: TicketTagRequest,
+    api_key: str = Depends(require_analyst),
+) -> TicketTagsResponse:
+    """
+    Add tags to a ticket. Duplicate tags are silently ignored.
+    Requires analyst or admin role.
+    """
+    if not settings.ticket_tags_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket tags are not enabled. Set TICKET_TAGS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Validate ticket exists
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    for tag in body.tags:
+        normalised = tag.strip().lower()
+        if not normalised:
+            continue
+        await _db.execute(
+            "INSERT OR IGNORE INTO ticket_tags (ticket_id, tag, added_at) VALUES (?, ?, ?)",
+            (ticket_id, normalised, now),
+        )
+    await _db.commit()
+
+    # Return all tags for this ticket
+    async with _db.execute(
+        "SELECT tag FROM ticket_tags WHERE ticket_id = ? ORDER BY tag", (ticket_id,)
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="add_tags",
+        resource=ticket_id,
+    )
+
+    return TicketTagsResponse(ticket_id=ticket_id, tags=[r[0] for r in rows])
+
+
+@app.get(
+    "/tickets/{ticket_id}/tags",
+    response_model=TicketTagsResponse,
+    tags=["tags"],
+)
+async def get_ticket_tags(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> TicketTagsResponse:
+    """Get all tags assigned to a ticket."""
+    if not settings.ticket_tags_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket tags are not enabled. Set TICKET_TAGS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+    async with _db.execute(
+        "SELECT tag FROM ticket_tags WHERE ticket_id = ? ORDER BY tag", (ticket_id,)
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    return TicketTagsResponse(ticket_id=ticket_id, tags=[r[0] for r in rows])
+
+
+@app.delete(
+    "/tickets/{ticket_id}/tags/{tag}",
+    tags=["tags"],
+)
+async def remove_ticket_tag(
+    ticket_id: str,
+    tag: str,
+    api_key: str = Depends(require_analyst),
+) -> dict:
+    """Remove a specific tag from a ticket. Requires analyst or admin role."""
+    if not settings.ticket_tags_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Ticket tags are not enabled. Set TICKET_TAGS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    normalised = tag.strip().lower()
+    async with _db.execute(
+        "SELECT ticket_id FROM ticket_tags WHERE ticket_id = ? AND tag = ?",
+        (ticket_id, normalised),
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Tag not found on ticket")
+
+    await _db.execute(
+        "DELETE FROM ticket_tags WHERE ticket_id = ? AND tag = ?",
+        (ticket_id, normalised),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="remove_tag",
+        resource=ticket_id,
+    )
+
+    return {"success": True, "ticket_id": ticket_id, "removed_tag": normalised}
+
+
+# ── Phase 7: Saved filters ──────────────────────────────────────────────────
+
+@app.post(
+    "/filters",
+    response_model=SavedFilterResponse,
+    tags=["filters"],
+)
+async def create_saved_filter(
+    body: SavedFilterCreate,
+    api_key: str = Depends(require_analyst),
+) -> SavedFilterResponse:
+    """
+    Create a named saved filter for ticket queries.
+
+    Filter criteria can include: category, priority, status, tags,
+    date_from, date_to. Requires analyst or admin role.
+    """
+    if not settings.saved_filters_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Saved filters are not enabled. Set SAVED_FILTERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    filter_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+    await _db.execute(
+        """INSERT INTO saved_filters (id, name, filter_criteria, created_at, created_by)
+           VALUES (?, ?, ?, ?, ?)""",
+        (filter_id, body.name, _json.dumps(body.filter_criteria), now, key_hash),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_saved_filter",
+        resource=filter_id,
+    )
+
+    record = SavedFilterRecord(
+        id=filter_id,
+        name=body.name,
+        filter_criteria=body.filter_criteria,
+        created_at=datetime.fromisoformat(now),
+        created_by=key_hash,
+    )
+    return SavedFilterResponse(data=record)
+
+
+@app.get(
+    "/filters",
+    response_model=SavedFilterListResponse,
+    tags=["filters"],
+)
+async def list_saved_filters(
+    api_key: str = Depends(require_viewer),
+) -> SavedFilterListResponse:
+    """List all saved ticket filters."""
+    if not settings.saved_filters_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Saved filters are not enabled. Set SAVED_FILTERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, name, filter_criteria, created_at, created_by "
+        "FROM saved_filters ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    filters = [
+        SavedFilterRecord(
+            id=r[0],
+            name=r[1],
+            filter_criteria=_json.loads(r[2]) if r[2] else {},
+            created_at=datetime.fromisoformat(r[3]),
+            created_by=r[4] or "",
+        )
+        for r in rows
+    ]
+    return SavedFilterListResponse(filters=filters)
+
+
+@app.delete(
+    "/filters/{filter_id}",
+    tags=["filters"],
+)
+async def delete_saved_filter(
+    filter_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete a saved filter. Requires admin role."""
+    if not settings.saved_filters_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Saved filters are not enabled. Set SAVED_FILTERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM saved_filters WHERE id = ?", (filter_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Saved filter not found")
+
+    await _db.execute("DELETE FROM saved_filters WHERE id = ?", (filter_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_saved_filter",
+        resource=filter_id,
+    )
+
+    return {"success": True, "deleted": filter_id}
 
 
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
