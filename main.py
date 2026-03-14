@@ -94,6 +94,9 @@ structlog.configure(
 
 log = structlog.get_logger(__name__)
 
+# ── Application version ───────────────────────────────────────────────────────
+APP_VERSION = "0.1.0"
+
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 
@@ -139,7 +142,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global _processor, _detector, _db  # noqa: PLW0603
 
-    log.info("ticketforge.startup", version="0.1.0", model=settings.ollama_model)
+    log.info("ticketforge.startup", version=APP_VERSION, model=settings.ollama_model)
 
     # Database
     _db = await aiosqlite.connect(settings.database_url.replace("sqlite+aiosqlite:///", ""))
@@ -163,7 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="TicketForge",
     description="Lightweight AI layer for enterprise IT ticketing systems.",
-    version="0.1.0",
+    version=APP_VERSION,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -548,7 +551,7 @@ async def suggest_response(
 
     prompt = SUGGEST_RESPONSE_PROMPT.format(
         ticket_id=row[0],
-        title=row[5] or "",  # summary as title fallback
+        title=row[5] or "",  # summary used as title (original title not persisted)
         description=body.additional_context or "N/A",
         category=row[2] or "",
         sub_category="",
@@ -565,7 +568,7 @@ async def suggest_response(
     ]
 
     try:
-        raw_content = await processor._llm.chat(messages, temperature=0.3, max_tokens=1024)
+        raw_content = await processor.chat_with_llm(messages, temperature=0.3, max_tokens=1024)
         from ticket_processor import _parse_llm_json  # noqa: PLC0415
         llm_data = _parse_llm_json(raw_content)
     except Exception as e:  # noqa: BLE001
@@ -693,7 +696,7 @@ def _compute_similarities(
     import numpy as np  # noqa: PLC0415
     from sklearn.preprocessing import normalize  # noqa: PLC0415
 
-    model = _detector._get_model()  # type: ignore[union-attr]
+    model = _detector.get_embedding_model()  # type: ignore[union-attr]
     texts = [query_text] + [c[1] for c in candidates]
     embeddings = model.encode(texts, show_progress_bar=False, batch_size=32)
     embeddings = normalize(embeddings)
@@ -892,7 +895,7 @@ async def dashboard():
     Shows recent tickets, analytics charts, SLA overview, and status summary.
     No authentication required for the HTML shell — data is fetched via authenticated API calls.
     """
-    return HTMLResponse(content=_DASHBOARD_HTML)
+    return HTMLResponse(content=_DASHBOARD_HTML.replace("{{APP_VERSION}}", APP_VERSION))
 
 
 @app.exception_handler(Exception)
@@ -1033,7 +1036,7 @@ th{font-weight:600;color:#555;font-size:.75rem;text-transform:uppercase}
 
 <div class="header">
   <h1>&#9878; TicketForge</h1>
-  <span class="version">v0.1.0</span>
+  <span class="version">v{{APP_VERSION}}</span>
 </div>
 
 <div class="api-bar">

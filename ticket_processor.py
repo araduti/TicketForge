@@ -61,6 +61,16 @@ class TicketProcessor:
     async def aclose(self) -> None:
         await self._llm.aclose()
 
+    async def chat_with_llm(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.1,
+        max_tokens: int = 1024,
+    ) -> str:
+        """Public interface to send a chat request to the configured LLM provider."""
+        return await self._llm.chat(messages, temperature=temperature, max_tokens=max_tokens)
+
     async def process(
         self,
         ticket: RawTicket,
