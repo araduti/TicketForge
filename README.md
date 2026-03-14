@@ -19,6 +19,11 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **Analytics Dashboard** | `GET /analytics` returns ticket counts by category, priority, daily trends, and avg automation score |
 | **SLA Tracking** | Configurable response/resolution targets per priority level with breach detection |
 | **Data Export** | `GET /export/tickets` in JSON or CSV format with category/priority filters |
+| **Sentiment Analysis** | Detects user sentiment (positive/neutral/negative/frustrated) with confidence scoring |
+| **Cloud LLM Support** | Pluggable LLM provider — use Ollama (local) or any OpenAI-compatible API (OpenAI, Azure, vLLM, LiteLLM) |
+| **Ticket Lifecycle** | Track ticket status (open/in_progress/resolved/closed) via `PATCH /tickets/{id}/status` |
+| **Language Detection** | Auto-detects ticket language (ISO 639-1) during analysis |
+| **Slack & Teams Alerts** | Push notifications for high-priority tickets and SLA breaches to Slack and Microsoft Teams |
 
 ---
 
@@ -46,7 +51,8 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
                        │  │        TicketProcessor           │   │
                        │  │                                  │   │
                        │  │  1. Build prompt                 │   │
-                       │  │  2. Call Ollama (Llama 3.1 8B)   │   │
+                       │  │  2. Call LLM provider             │   │
+                       │  │     (Ollama / OpenAI-compatible)  │   │
                        │  │  3. Parse structured JSON        │   │
                        │  │  4. Assemble EnrichedTicket      │   │
                        │  └──────┬──────────────┬───────────┘   │
@@ -329,9 +335,13 @@ All settings are read from environment variables (or a `.env` file):
 |---|---|---|
 | `API_KEYS` | `changeme` | Comma-separated list of valid API keys |
 | `API_KEY_ROLES` | `{}` | JSON mapping of API key → role (admin/analyst/viewer) |
+| `LLM_PROVIDER` | `ollama` | LLM backend: `ollama` (local) or `openai` (OpenAI-compatible API) |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama service URL |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Model to use for analysis |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Model to use for analysis (Ollama provider) |
 | `OLLAMA_TIMEOUT` | `120` | Seconds before LLM call times out |
+| `OPENAI_API_KEY` | _(empty)_ | API key for OpenAI-compatible provider |
+| `OPENAI_BASE_URL` | `https://api.openai.com` | Base URL for OpenAI-compatible API |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model name for OpenAI-compatible provider |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./ticketforge.db` | SQLite path |
 | `DB_TICKET_TTL_HOURS` | `24` | Hours to retain ticket cache |
 | `DBSCAN_EPS` | `0.3` | DBSCAN neighbourhood distance |
@@ -342,6 +352,10 @@ All settings are read from environment variables (or a `.env` file):
 | `JIRA_BASE_URL` | _(empty)_ | e.g. `https://mycompany.atlassian.net` |
 | `ZENDESK_SUBDOMAIN` | _(empty)_ | e.g. `mycompany` |
 | `OUTBOUND_WEBHOOK_URL` | _(empty)_ | POST enriched JSON here (Slack, Teams, …) |
+| `SLACK_WEBHOOK_URL` | _(empty)_ | Slack incoming webhook URL for notifications |
+| `TEAMS_WEBHOOK_URL` | _(empty)_ | Microsoft Teams incoming webhook URL for notifications |
+| `NOTIFICATION_MIN_PRIORITY` | `high` | Minimum priority to trigger Slack/Teams alerts |
+| `NOTIFY_ON_SLA_BREACH` | `true` | Send alerts when SLA is breached or at risk |
 | `SLA_RESPONSE_CRITICAL` | `15` | Response SLA for critical tickets (minutes) |
 | `SLA_RESPONSE_HIGH` | `60` | Response SLA for high tickets (minutes) |
 | `SLA_RESPONSE_MEDIUM` | `240` | Response SLA for medium tickets (minutes) |

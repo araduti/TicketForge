@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     sla_resolution_low: int = Field(default=2880, description="Resolution SLA for low (minutes)")
 
     # ── Ollama / LLM ──────────────────────────────────────────────────────────
+    llm_provider: str = Field(
+        default="ollama",
+        description="LLM provider: 'ollama' (local) or 'openai' (OpenAI-compatible API)",
+    )
     ollama_base_url: str = Field(
         default="http://ollama:11434",
         description="Base URL of the Ollama service",
@@ -50,11 +54,25 @@ class Settings(BaseSettings):
     )
     ollama_timeout: float = Field(
         default=120.0,
-        description="HTTP timeout (seconds) for Ollama requests",
+        description="HTTP timeout (seconds) for LLM requests",
     )
     ollama_max_retries: int = Field(
         default=3,
-        description="Number of retry attempts for failed Ollama calls",
+        description="Number of retry attempts for failed LLM calls",
+    )
+
+    # ── OpenAI-compatible provider ────────────────────────────────────────────
+    openai_api_key: str = Field(
+        default="",
+        description="API key for OpenAI-compatible provider (leave empty for keyless endpoints like vLLM)",
+    )
+    openai_base_url: str = Field(
+        default="https://api.openai.com",
+        description="Base URL for OpenAI-compatible API (e.g. https://api.openai.com, http://localhost:8080)",
+    )
+    openai_model: str = Field(
+        default="gpt-4o-mini",
+        description="Model name for OpenAI-compatible provider",
     )
 
     # ── Embeddings ────────────────────────────────────────────────────────────
@@ -134,6 +152,24 @@ class Settings(BaseSettings):
     outbound_webhook_secret: str = Field(
         default="",
         description="HMAC secret for signing outbound webhook payloads",
+    )
+
+    # ── Slack / Teams notifications ───────────────────────────────────────────
+    slack_webhook_url: str = Field(
+        default="",
+        description="Slack incoming webhook URL for ticket notifications",
+    )
+    teams_webhook_url: str = Field(
+        default="",
+        description="Microsoft Teams incoming webhook URL for ticket notifications",
+    )
+    notification_min_priority: str = Field(
+        default="high",
+        description="Minimum priority level to trigger Slack/Teams notifications (critical, high, medium, low)",
+    )
+    notify_on_sla_breach: bool = Field(
+        default=True,
+        description="Send notification when a ticket SLA is breached or at risk",
     )
 
     # ── App ───────────────────────────────────────────────────────────────────

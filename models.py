@@ -53,6 +53,22 @@ class SLAStatus(str, Enum):
     breached = "breached"
 
 
+class Sentiment(str, Enum):
+    """User/customer sentiment detected in the ticket."""
+    positive = "positive"
+    neutral = "neutral"
+    negative = "negative"
+    frustrated = "frustrated"
+
+
+class TicketStatus(str, Enum):
+    """Ticket lifecycle status."""
+    open = "open"
+    in_progress = "in_progress"
+    resolved = "resolved"
+    closed = "closed"
+
+
 # ── Inbound ticket payload ────────────────────────────────────────────────────
 
 class RawTicket(BaseModel):
@@ -116,6 +132,13 @@ class RootCauseHypothesis(BaseModel):
     )
 
 
+class SentimentResult(BaseModel):
+    """Sentiment detected in the ticket text."""
+    sentiment: Sentiment = Field(default=Sentiment.neutral)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    rationale: str = Field(default="", description="Brief explanation of why this sentiment was detected")
+
+
 class SLAInfo(BaseModel):
     """SLA status for a ticket based on its priority."""
     response_target_minutes: int = Field(default=0, description="Target response time in minutes")
@@ -137,6 +160,9 @@ class EnrichedTicket(BaseModel):
     automation: AutomationOpportunity
     kb_articles: list[KBArticle] = Field(default_factory=list, max_length=3)
     root_cause: RootCauseHypothesis
+    sentiment: SentimentResult = Field(default_factory=SentimentResult, description="Detected user sentiment")
+    detected_language: str = Field(default="en", description="ISO 639-1 language code detected in the ticket")
+    ticket_status: TicketStatus = Field(default=TicketStatus.open, description="Current ticket lifecycle status")
     sla: SLAInfo = Field(default_factory=SLAInfo, description="SLA tracking information")
     processed_at: datetime = Field(default_factory=_utcnow)
     processing_time_ms: float = Field(default=0.0)
@@ -177,6 +203,12 @@ class WebhookIngest(BaseModel):
     """POST /webhook/{source} — ingest from source system webhook."""
 
     payload: dict[str, Any]
+
+
+class TicketStatusUpdate(BaseModel):
+    """PATCH /tickets/{id}/status — update ticket lifecycle status."""
+
+    status: TicketStatus
 
 
 class HealthResponse(BaseModel):

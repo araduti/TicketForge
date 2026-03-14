@@ -1,7 +1,7 @@
 """
 TicketForge — Core ticket processing pipeline
-Orchestrates LLM calls (via Ollama), parses structured JSON output, and
-assembles the final EnrichedTicket result.
+Orchestrates LLM calls (via pluggable providers), parses structured JSON output,
+and assembles the final EnrichedTicket result.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import re
 import time
 from typing import Any
 
-import httpx
 import structlog
 from tenacity import (
     retry,
@@ -20,8 +19,10 @@ from tenacity import (
     wait_exponential,
 )
 
+import httpx
 from automation_detector import AutomationDetector
 from config import Settings
+from llm_provider import LLMProvider, create_llm_provider
 from models import (
     AutomationOpportunity,
     AutomationSuggestionType,
@@ -33,6 +34,8 @@ from models import (
     RawTicket,
     RootCauseHypothesis,
     RoutingResult,
+    Sentiment,
+    SentimentResult,
 )
 from prompts import ANALYSE_USER_PROMPT, SYSTEM_PROMPT
 
@@ -45,7 +48,7 @@ _ROOT_CAUSE_CONFIDENCE_THRESHOLD = 0.75
 class TicketProcessor:
     """
     Main processing pipeline:
-    1. Format prompt → call Ollama → parse JSON
+    1. Format prompt → call LLM provider → parse JSON
     2. Optionally run automation detection
     3. Return EnrichedTicket
     """
@@ -53,13 +56,10 @@ class TicketProcessor:
     def __init__(self, settings: Settings, automation_detector: AutomationDetector) -> None:
         self._settings = settings
         self._detector = automation_detector
-        self._http_client = httpx.AsyncClient(
-            base_url=settings.ollama_base_url,
-            timeout=httpx.Timeout(settings.ollama_timeout),
-        )
+        self._llm: LLMProvider = create_llm_provider(settings)
 
     async def aclose(self) -> None:
-        await self._http_client.aclose()
+        await self._llm.aclose()
 
     async def process(
         self,
@@ -118,24 +118,18 @@ class TicketProcessor:
             tags=", ".join(ticket.tags),
         )
 
-        payload = {
-            "model": self._settings.ollama_model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.1,  # low temperature for structured output
-                "num_predict": 1024,
-            },
-        }
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
 
-        log.debug("ticket_processor.llm_request", ticket_id=ticket.id, model=payload["model"])
-        response = await self._http_client.post("/api/chat", json=payload)
-        response.raise_for_status()
-
-        raw_content: str = response.json()["message"]["content"]
+        log.debug(
+            "ticket_processor.llm_request",
+            ticket_id=ticket.id,
+            provider=self._llm.provider_name,
+            model=self._llm.model_name,
+        )
+        raw_content = await self._llm.chat(messages, temperature=0.1, max_tokens=1024)
         return _parse_llm_json(raw_content)
 
 
@@ -215,6 +209,22 @@ def _build_enriched(
         included=include_rc,
     )
 
+    # Sentiment
+    sentiment_str = (llm.get("sentiment") or "neutral").lower()
+    try:
+        sentiment_enum = Sentiment(sentiment_str)
+    except ValueError:
+        sentiment_enum = Sentiment.neutral
+
+    sentiment = SentimentResult(
+        sentiment=sentiment_enum,
+        confidence=_clamp(float(llm.get("sentiment_confidence", 0.5))),
+        rationale=llm.get("sentiment_rationale", ""),
+    )
+
+    # Language
+    detected_language = llm.get("detected_language", "en") or "en"
+
     return EnrichedTicket(
         ticket_id=ticket.id,
         source=ticket.source,
@@ -225,6 +235,8 @@ def _build_enriched(
         automation=automation,
         kb_articles=kb_articles,
         root_cause=root_cause,
+        sentiment=sentiment,
+        detected_language=detected_language,
         processing_time_ms=elapsed_ms,
     )
 
