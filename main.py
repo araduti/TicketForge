@@ -347,7 +347,9 @@ CREATE TABLE IF NOT EXISTS processed_tickets (
     summary TEXT,
     sentiment TEXT DEFAULT 'neutral',
     detected_language TEXT DEFAULT 'en',
-    ticket_status TEXT DEFAULT 'open'
+    ticket_status TEXT DEFAULT 'open',
+    created_at TEXT DEFAULT NULL,
+    updated_at TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ticket_history (
@@ -7545,7 +7547,7 @@ async def predict_resolution_time(
 
     # Fetch ticket details
     async with _db.execute(
-        "SELECT category, priority, ticket_status FROM processed_tickets WHERE ticket_id = ?",
+        "SELECT category, priority, ticket_status FROM processed_tickets WHERE id = ?",
         (ticket_id,),
     ) as cursor:
         ticket_row = await cursor.fetchone()
@@ -7559,7 +7561,7 @@ async def predict_resolution_time(
 
     # Calculate historical averages
     async with _db.execute(
-        "SELECT AVG(CAST((julianday(updated_at) - julianday(created_at)) * 24 AS REAL)) FROM processed_tickets WHERE category = ? AND ticket_status = 'resolved'",
+        "SELECT AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE category = ? AND ticket_status = 'resolved'",
         (category,),
     ) as cursor:
         cat_avg_row = await cursor.fetchone()
@@ -7628,7 +7630,7 @@ async def get_resolution_stats(
     # Average resolution hours by category
     by_category: dict[str, float] = {}
     async with _db.execute(
-        "SELECT category, AVG(CAST((julianday(updated_at) - julianday(created_at)) * 24 AS REAL)) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY category"
+        "SELECT category, AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY category"
     ) as cursor:
         cat_rows = await cursor.fetchall()
     for r in cat_rows:
@@ -7638,7 +7640,7 @@ async def get_resolution_stats(
     # Average resolution hours by priority
     by_priority: dict[str, float] = {}
     async with _db.execute(
-        "SELECT priority, AVG(CAST((julianday(updated_at) - julianday(created_at)) * 24 AS REAL)) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY priority"
+        "SELECT priority, AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY priority"
     ) as cursor:
         pri_rows = await cursor.fetchall()
     for r in pri_rows:
@@ -7681,7 +7683,7 @@ async def predict_satisfaction(
 
     # Fetch ticket details
     async with _db.execute(
-        "SELECT category, priority, ticket_status, sentiment FROM processed_tickets WHERE ticket_id = ?",
+        "SELECT category, priority, ticket_status, sentiment FROM processed_tickets WHERE id = ?",
         (ticket_id,),
     ) as cursor:
         ticket_row = await cursor.fetchone()
@@ -7763,7 +7765,7 @@ async def get_satisfaction_trends(
 
     # Query CSAT scores
     async with _db.execute(
-        "SELECT score, submitted_at FROM csat_responses ORDER BY submitted_at DESC LIMIT 100"
+        "SELECT rating, submitted_at FROM csat_ratings ORDER BY submitted_at DESC LIMIT 100"
     ) as cursor:
         rows = await cursor.fetchall()
 
@@ -7918,7 +7920,7 @@ async def smart_assign_ticket(
 
     # Fetch ticket details
     async with _db.execute(
-        "SELECT category, priority FROM processed_tickets WHERE ticket_id = ?",
+        "SELECT category, priority FROM processed_tickets WHERE id = ?",
         (ticket_id,),
     ) as cursor:
         ticket_row = await cursor.fetchone()
