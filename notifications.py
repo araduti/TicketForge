@@ -152,8 +152,13 @@ async def send_notifications(enriched: EnrichedTicket, settings: Settings) -> No
                     ticket_id=enriched.ticket_id,
                     status=r.status_code,
                 )
-            except Exception as e:  # noqa: BLE001
-                log.error("notification.slack.failed", ticket_id=enriched.ticket_id, error=str(e))
+            except (httpx.HTTPError, httpx.TimeoutException) as e:
+                log.error(
+                    "notification.slack.failed",
+                    ticket_id=enriched.ticket_id,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
 
         if settings.teams_webhook_url:
             try:
@@ -164,5 +169,10 @@ async def send_notifications(enriched: EnrichedTicket, settings: Settings) -> No
                     ticket_id=enriched.ticket_id,
                     status=r.status_code,
                 )
-            except Exception as e:  # noqa: BLE001
-                log.error("notification.teams.failed", ticket_id=enriched.ticket_id, error=str(e))
+            except (httpx.HTTPError, httpx.TimeoutException) as e:
+                log.error(
+                    "notification.teams.failed",
+                    ticket_id=enriched.ticket_id,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )

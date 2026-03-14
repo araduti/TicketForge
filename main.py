@@ -394,11 +394,6 @@ async def get_cached_ticket(
             resource=ticket_id,
         )
     # Return a minimal EnrichedTicket reconstructed from the cache
-    # Safely handle missing columns for DBs created before migration
-    sentiment_val = row[7] if len(row) > 7 else "neutral"
-    language_val = row[8] if len(row) > 8 else "en"
-    status_val = row[9] if len(row) > 9 else "open"
-
     return EnrichedTicket(
         ticket_id=row[0],
         source=TicketSource(row[1]),
@@ -411,10 +406,10 @@ async def get_cached_ticket(
         ),
         root_cause=RootCauseHypothesis(),
         sentiment=SentimentResult(
-            sentiment=Sentiment(sentiment_val or "neutral"),
+            sentiment=Sentiment(row[7] or "neutral"),
         ),
-        detected_language=language_val or "en",
-        ticket_status=TicketStatus(status_val or "open"),
+        detected_language=row[8] or "en",
+        ticket_status=TicketStatus(row[9] or "open"),
         processed_at=datetime.fromisoformat(row[2]),
     )
 
@@ -451,15 +446,14 @@ async def update_ticket_status(
     )
     await _db.commit()
 
-    if _db:
-        await audit.record(
-            _db,
-            api_key=api_key,
-            role=_resolve_role(api_key),
-            action="update_ticket_status",
-            resource=ticket_id,
-            detail=f"status={body.status.value}",
-        )
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="update_ticket_status",
+        resource=ticket_id,
+        detail=f"status={body.status.value}",
+    )
     return {"success": True, "ticket_id": ticket_id, "status": body.status.value}
 
 
@@ -666,9 +660,9 @@ async def export_tickets(
             "priority": r[4],
             "automation_score": r[5],
             "summary": r[6],
-            "sentiment": r[7] if len(r) > 7 else "neutral",
-            "detected_language": r[8] if len(r) > 8 else "en",
-            "ticket_status": r[9] if len(r) > 9 else "open",
+            "sentiment": r[7] or "neutral",
+            "detected_language": r[8] or "en",
+            "ticket_status": r[9] or "open",
         }
         for r in rows
     ]
