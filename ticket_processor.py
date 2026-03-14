@@ -2,6 +2,10 @@
 TicketForge — Core ticket processing pipeline
 Orchestrates LLM calls (via pluggable providers), parses structured JSON output,
 and assembles the final EnrichedTicket result.
+
+Supports two modes:
+  - Single LLM call (default) — one combined analysis prompt
+  - Multi-agent pipeline — Analyser → Classifier → Validator (when MULTI_AGENT_ENABLED=true)
 """
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ from models import (
     Sentiment,
     SentimentResult,
 )
+from multi_agent import MultiAgentOrchestrator
 from prompts import ANALYSE_USER_PROMPT, SYSTEM_PROMPT
 
 log = structlog.get_logger(__name__)
@@ -51,12 +56,21 @@ class TicketProcessor:
     1. Format prompt → call LLM provider → parse JSON
     2. Optionally run automation detection
     3. Return EnrichedTicket
+
+    When multi-agent mode is enabled, step 1 is replaced by the
+    Analyser → Classifier → Validator pipeline.
     """
 
     def __init__(self, settings: Settings, automation_detector: AutomationDetector) -> None:
         self._settings = settings
         self._detector = automation_detector
         self._llm: LLMProvider = create_llm_provider(settings)
+        self._multi_agent: MultiAgentOrchestrator | None = None
+        if settings.multi_agent_enabled:
+            self._multi_agent = MultiAgentOrchestrator(
+                self._llm,
+                max_description_chars=settings.llm_description_max_chars,
+            )
 
     async def aclose(self) -> None:
         await self._llm.aclose()
@@ -86,11 +100,11 @@ class TicketProcessor:
         if include_automation:
             # Feed the ticket into history *before* detect so it may join its own cluster
             self._detector.add_to_history(ticket_text, ticket.created_at)
-            llm_task = asyncio.create_task(self._analyse_with_llm(ticket))
+            llm_task = asyncio.create_task(self._run_analysis(ticket))
             auto_task = asyncio.create_task(self._detector.detect(ticket_text))
             llm_data, automation = await asyncio.gather(llm_task, auto_task)
         else:
-            llm_data = await self._analyse_with_llm(ticket)
+            llm_data = await self._run_analysis(ticket)
             automation = AutomationOpportunity(
                 score=0, suggestion_type=AutomationSuggestionType.none
             )
@@ -105,9 +119,23 @@ class TicketProcessor:
             category=enriched.category.category,
             priority=enriched.priority.priority,
             automation_score=enriched.automation.score,
+            multi_agent=self._multi_agent is not None,
             ms=round(elapsed_ms, 1),
         )
         return enriched
+
+    async def _run_analysis(self, ticket: RawTicket) -> dict[str, Any]:
+        """Route to multi-agent pipeline or single LLM call."""
+        if self._multi_agent is not None:
+            return await self._multi_agent.run(
+                ticket_id=ticket.id,
+                source=ticket.source.value,
+                title=ticket.title,
+                description=ticket.description,
+                reporter=ticket.reporter,
+                tags=", ".join(ticket.tags),
+            )
+        return await self._analyse_with_llm(ticket)
 
     # ── LLM interaction ───────────────────────────────────────────────────────
 

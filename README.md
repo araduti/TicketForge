@@ -36,6 +36,9 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **CSAT Surveys** | `POST /tickets/{id}/csat` to collect customer satisfaction ratings (1-5); `GET /analytics/csat` for aggregate scores |
 | **WebSocket Notifications** | Real-time event streaming via `WS /ws/notifications` for ticket creation, status changes, and SLA breaches |
 | **Multi-Language (i18n)** | `GET /i18n/languages` lists 27 supported languages; LLM responses generated in the ticket's detected language |
+| **Multi-Agent Pipeline** | Configurable Analyser → Classifier → Validator pipeline for enhanced accuracy; toggle via `MULTI_AGENT_ENABLED` |
+| **Persistent Vector Store** | Pluggable vector store with in-memory (default) and persistent SQLite-backed backends via `VECTOR_STORE_BACKEND` |
+| **PostgreSQL Support** | Full PostgreSQL async connectivity via asyncpg driver; configure via `DATABASE_URL=postgresql://...` |
 
 ---
 
@@ -369,6 +372,20 @@ curl -s http://localhost:8000/i18n/languages \
   -H "X-Api-Key: my-key" | jq .
 ```
 
+### Check multi-agent pipeline status
+
+```bash
+curl -s http://localhost:8000/multi-agent/status \
+  -H "X-Api-Key: my-key" | jq .
+```
+
+### Check vector store status
+
+```bash
+curl -s http://localhost:8000/vector-store/status \
+  -H "X-Api-Key: my-key" | jq .
+```
+
 ---
 
 ## RBAC setup
@@ -456,6 +473,8 @@ All settings are read from environment variables (or a `.env` file):
 | `WEBSOCKET_NOTIFICATIONS_ENABLED` | `true` | Enable WebSocket real-time event streaming at `/ws/notifications` |
 | `I18N_ENABLED` | `true` | Enable multi-language prompt templates and localised LLM responses |
 | `I18N_DEFAULT_LANGUAGE` | `en` | Default language (ISO 639-1) when no language is detected |
+| `MULTI_AGENT_ENABLED` | `false` | Enable multi-agent pipeline (Analyser → Classifier → Validator) instead of single LLM call |
+| `VECTOR_STORE_BACKEND` | `in_memory` | Vector store backend: `in_memory` (default) or `persistent` (SQLite-backed) |
 
 ---
 

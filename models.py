@@ -560,3 +560,41 @@ class WebSocketEvent(BaseModel):
     ticket_id: str = Field(default="", description="Related ticket ID")
     data: dict[str, Any] = Field(default_factory=dict, description="Event-specific payload")
     timestamp: datetime = Field(default_factory=_utcnow)
+
+
+# ── Multi-agent architecture models ─────────────────────────────────────────
+
+class AgentStepResult(BaseModel):
+    """Result from a single agent in the multi-agent pipeline."""
+
+    agent: str = Field(..., description="Agent name: analyser, classifier, validator")
+    output: dict[str, Any] = Field(default_factory=dict, description="Raw agent output")
+
+
+class MultiAgentResult(BaseModel):
+    """Metadata about a multi-agent pipeline execution."""
+
+    enabled: bool = Field(default=False, description="Whether multi-agent was used for this ticket")
+    agent_count: int = Field(default=0, description="Number of agents in the pipeline")
+    validated: bool = Field(default=False, description="Whether the validator approved the result")
+    corrections: list[str] = Field(default_factory=list, description="Corrections made by the validator")
+
+
+class MultiAgentStatusResponse(BaseModel):
+    """GET /multi-agent/status — current multi-agent configuration."""
+
+    success: bool = True
+    enabled: bool = Field(default=False)
+    agents: list[str] = Field(default_factory=list, description="Agents in the pipeline")
+    description: str = Field(default="", description="Pipeline description")
+
+
+# ── Vector store models ──────────────────────────────────────────────────────
+
+class VectorStoreStatusResponse(BaseModel):
+    """GET /vector-store/status — current vector store status."""
+
+    success: bool = True
+    backend: str = Field(default="in_memory", description="Active backend: in_memory or persistent")
+    total_vectors: int = Field(default=0, description="Number of stored vectors")
+
