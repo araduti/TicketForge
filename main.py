@@ -696,7 +696,7 @@ def _compute_similarities(
     import numpy as np  # noqa: PLC0415
     from sklearn.preprocessing import normalize  # noqa: PLC0415
 
-    model = _detector.get_embedding_model()  # type: ignore[union-attr]
+    model = _detector.get_embedding_model()
     texts = [query_text] + [c[1] for c in candidates]
     embeddings = model.encode(texts, show_progress_bar=False, batch_size=32)
     embeddings = normalize(embeddings)
@@ -1168,7 +1168,7 @@ function renderSLA(tickets){
     if(v>0) html += '<div class="stat-card" style="flex:1;min-width:100px"><div class="label">'+k+'</div><div class="value">'+v+'</div></div>';
   });
   html += '</div></div>';
-  html += '<div style="font-size:.85rem;color:#666">SLA tracking is available per-ticket via the API. Use <code>GET /tickets/{id}</code> with an API key to see full SLA details.</div>';
+  html += '<div style="font-size:.85rem;color:#555">SLA tracking is available per-ticket via the API. Use <code>GET /tickets/{id}</code> with an API key to see full SLA details.</div>';
   el.innerHTML = html;
 }
 
