@@ -33,6 +33,9 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **Self-Service Portal** | `GET /portal` HTML page for end-users to submit tickets, check status, browse KB, and chat |
 | **Model Monitoring** | `GET /monitoring/drift` detects prediction drift in category, priority, and sentiment distributions |
 | **Plugin System** | Pluggable enrichment architecture with pre/post analysis hooks and a `GET /plugins` management endpoint |
+| **CSAT Surveys** | `POST /tickets/{id}/csat` to collect customer satisfaction ratings (1-5); `GET /analytics/csat` for aggregate scores |
+| **WebSocket Notifications** | Real-time event streaming via `WS /ws/notifications` for ticket creation, status changes, and SLA breaches |
+| **Multi-Language (i18n)** | `GET /i18n/languages` lists 27 supported languages; LLM responses generated in the ticket's detected language |
 
 ---
 
@@ -336,6 +339,36 @@ curl -s http://localhost:8000/plugins \
   -H "X-Api-Key: my-admin-key" | jq .
 ```
 
+### Submit a CSAT rating
+
+```bash
+curl -s http://localhost:8000/tickets/TICKET-001/csat \
+  -H "X-Api-Key: my-key" \
+  -H "Content-Type: application/json" \
+  -d '{"rating": 5, "comment": "Resolved quickly!"}' | jq .
+```
+
+### Get CSAT analytics (analyst+)
+
+```bash
+curl -s http://localhost:8000/analytics/csat \
+  -H "X-Api-Key: my-analyst-key" | jq .
+```
+
+### WebSocket real-time notifications
+
+```bash
+# Connect via wscat or similar WebSocket client
+wscat -c "ws://localhost:8000/ws/notifications?api_key=my-key"
+```
+
+### List supported i18n languages
+
+```bash
+curl -s http://localhost:8000/i18n/languages \
+  -H "X-Api-Key: my-key" | jq .
+```
+
 ---
 
 ## RBAC setup
@@ -419,6 +452,10 @@ All settings are read from environment variables (or a `.env` file):
 | `MONITORING_WINDOW_DAYS` | `7` | Recent monitoring window in days |
 | `DRIFT_THRESHOLD` | `0.3` | Drift score threshold (0.0–1.0) to flag as drifting |
 | `EMAIL_INGESTION_ENABLED` | `false` | Enable the `POST /ingest/email` endpoint |
+| `CSAT_ENABLED` | `true` | Enable CSAT survey endpoints (`/tickets/{id}/csat`, `/analytics/csat`) |
+| `WEBSOCKET_NOTIFICATIONS_ENABLED` | `true` | Enable WebSocket real-time event streaming at `/ws/notifications` |
+| `I18N_ENABLED` | `true` | Enable multi-language prompt templates and localised LLM responses |
+| `I18N_DEFAULT_LANGUAGE` | `en` | Default language (ISO 639-1) when no language is detected |
 
 ---
 
