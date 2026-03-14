@@ -23,7 +23,7 @@
 
 TicketForge occupies a **unique niche** as a lightweight, self-hosted AI enrichment layer that sits *on top of* existing ticketing systems (ServiceNow, Jira, Zendesk). Unlike full helpdesk platforms that replace your ticketing system, TicketForge **augments** them with local-LLM-powered analysis, categorization, routing, automation detection, and SLA tracking — all without sending data to external AI APIs.
 
-**Key finding:** TicketForge's AI analysis capabilities are competitive with commercial platforms. With Phase 6 complete, TicketForge now offers AI-powered auto-resolution, outbound webhook events for Zapier/Make/n8n integration, and PagerDuty/OpsGenie escalation connectors — closing the remaining critical gaps in the **integration ecosystem** and **AI capabilities** categories.
+**Key finding:** TicketForge's AI analysis capabilities are competitive with commercial platforms. With Phases 1–9 complete (40 recommendations delivered over 18 months), all documented competitive gaps are now closed. Phase 10 defines the next strategic investment areas: advanced analytics, AI customisation, visual workflow building, compliance hardening, performance at scale, and UX polish.
 
 ---
 
@@ -354,6 +354,44 @@ These add enterprise workflow capabilities that streamline operations for large-
 | 38 | **Add agent collision detection** (`POST/DELETE/GET /tickets/{id}/lock` to prevent multiple agents editing the same ticket) | Low | Medium | ✅ Done |
 | 39 | **Add customer contact management** (`POST/GET /contacts`, `GET /contacts/{id}/tickets` for requester tracking across tickets) | Medium | Medium | ✅ Done |
 | 40 | **Add macros** (`POST/GET/DELETE /macros`, `POST /macros/{id}/execute` for pre-defined action sequences on tickets) | Medium | High | ✅ Done |
+
+### Phase 10: Next-Generation Platform (18-22 months)
+With all 40 original recommendations delivered, Phase 10 shifts focus from closing competitive gaps to building next-generation capabilities and operational maturity.
+
+#### 10a. Advanced Analytics (4-6 weeks)
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 41 | **Add team dashboards** (real-time agent and team performance views with key metrics) | Medium | High | 🔲 Planned |
+| 42 | **Enhance SLA prediction** (multi-factor breach forecasting with configurable risk thresholds) | Medium | High | 🔲 Planned |
+| 43 | **Add volume forecasting** (historical trend analysis to predict ticket volumes by category/time) | High | Medium | 🔲 Planned |
+
+#### 10b. AI Customisation (6-8 weeks)
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 44 | **Add custom classifiers** (user-trained classification models for organisation-specific categories) | High | High | 🔲 Planned |
+| 45 | **Add anomaly detection** (statistical alerting on ticket volume spikes, new error patterns, unusual trends) | High | High | 🔲 Planned |
+| 46 | **Add KB auto-generation** (LLM-powered knowledge base article creation from resolved ticket patterns) | High | Medium | 🔲 Planned |
+
+#### 10c. Platform Maturity (8-10 weeks)
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 47 | **Add visual workflow builder** (drag-and-drop UI for automation rule and approval workflow design) | High | High | 🔲 Planned |
+| 48 | **Add compliance & security hardening** (SOC 2 readiness, data retention policies, PII redaction, encryption at rest) | High | High | 🔲 Planned |
+| 49 | **Add performance & scale improvements** (connection pooling, query optimisation, caching layer, horizontal scaling support) | High | Medium | 🔲 Planned |
+| 50 | **Add UX polish** (responsive design, accessibility improvements, keyboard shortcuts, dark mode, onboarding wizard) | Medium | Medium | 🔲 Planned |
+
+#### Phase 10 — Immediate Action Items
+
+| Action Item | Owner | Duration | Description |
+|-------------|-------|----------|-------------|
+| Customer feedback survey | Product | 1 week | Identify top 3 pain points from existing users to validate Phase 10 priorities |
+| Competitive audit | Product | 1 week | Review latest Zendesk, Freshservice, and LibreDesk updates for new gap opportunities |
+| Create Phase 10 spec | Engineering | 1 week | Define primary features, break into sprints, and assign ownership |
+| Establish infrastructure | Engineering | 2 days | Git branch, test file scaffolding, CI/CD pipeline setup for Phase 10 |
+| Team planning | Engineering | 3 days | Sprint kickoff, delivery timeline, and milestone definitions |
 
 ### Prioritization Framework
 
