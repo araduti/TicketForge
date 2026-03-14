@@ -6595,7 +6595,7 @@ async def export_audit_logs(
     since = (datetime.now(tz=timezone.utc) - timedelta(days=days)).isoformat()
 
     async with _db.execute(
-        "SELECT id, timestamp, api_key, role, action, resource, detail FROM audit_log WHERE timestamp >= ? ORDER BY timestamp DESC",
+        "SELECT id, timestamp, api_key_hash, role, action, resource, detail FROM audit_log WHERE timestamp >= ? ORDER BY timestamp DESC",
         (since,),
     ) as cursor:
         rows = await cursor.fetchall()
@@ -6604,7 +6604,7 @@ async def export_audit_logs(
         {
             "id": r[0],
             "timestamp": r[1],
-            "api_key": r[2][:8] + "***" if r[2] and len(r[2]) > 8 else r[2],
+            "api_key_hash": r[2][:8] + "***" if r[2] and len(r[2]) > 8 else r[2],
             "role": r[3],
             "action": r[4],
             "resource": r[5],
