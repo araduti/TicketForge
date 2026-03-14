@@ -137,20 +137,6 @@ class TicketProcessor:
             )
         return await self._analyse_with_llm(ticket)
 
-        elapsed_ms = (time.monotonic() - start) * 1000
-
-        enriched = _build_enriched(ticket, llm_data, automation, elapsed_ms)
-        log.info(
-            "ticket_processor.processed",
-            ticket_id=ticket.id,
-            source=ticket.source,
-            category=enriched.category.category,
-            priority=enriched.priority.priority,
-            automation_score=enriched.automation.score,
-            ms=round(elapsed_ms, 1),
-        )
-        return enriched
-
     # ── LLM interaction ───────────────────────────────────────────────────────
 
     @retry(

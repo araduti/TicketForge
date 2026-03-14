@@ -148,7 +148,7 @@ class PersistentVectorStore(VectorStore):
         results: list[dict[str, Any]] = []
         async with self._db.execute("SELECT key, vector, metadata FROM vector_store") as cursor:
             async for row in cursor:
-                vec = np.array(json.loads(row[0 + 1]), dtype=np.float32)
+                vec = np.array(json.loads(row[1]), dtype=np.float32)
                 vec_norm = np.linalg.norm(vec)
                 if vec_norm == 0:
                     continue
