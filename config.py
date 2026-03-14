@@ -239,6 +239,18 @@ class Settings(BaseSettings):
         description="Default language (ISO 639-1) when no language is detected",
     )
 
+    # ── Multi-agent architecture ──────────────────────────────────────────────
+    multi_agent_enabled: bool = Field(
+        default=False,
+        description="Enable multi-agent pipeline (Analyser → Classifier → Validator) instead of single LLM call",
+    )
+
+    # ── Vector store ──────────────────────────────────────────────────────────
+    vector_store_backend: str = Field(
+        default="in_memory",
+        description="Vector store backend: 'in_memory' (default) or 'persistent' (SQLite-backed)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

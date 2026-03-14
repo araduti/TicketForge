@@ -71,6 +71,7 @@ from models import (
     KBSearchResponse,
     KBSearchResult,
     MonitoringResponse,
+    MultiAgentStatusResponse,
     PluginInfo,
     PluginListResponse,
     PortalTicketResponse,
@@ -92,11 +93,13 @@ from models import (
     TicketSource,
     TicketStatus,
     TicketStatusUpdate,
+    VectorStoreStatusResponse,
     WebhookIngest,
     WebSocketEvent,
 )
 from notifications import send_notifications
 from ticket_processor import TicketProcessor
+from vector_store import VectorStore, create_vector_store
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 structlog.configure(
@@ -126,6 +129,7 @@ limiter = Limiter(key_func=get_remote_address)
 _processor: TicketProcessor | None = None
 _detector: AutomationDetector | None = None
 _db: aiosqlite.Connection | None = None
+_vector_store: VectorStore | None = None
 
 
 # ── WebSocket connection manager ──────────────────────────────────────────────
@@ -218,7 +222,7 @@ CREATE TABLE IF NOT EXISTS csat_ratings (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global _processor, _detector, _db  # noqa: PLW0603
+    global _processor, _detector, _db, _vector_store  # noqa: PLW0603
 
     log.info("ticketforge.startup", version=APP_VERSION, model=settings.ollama_model)
 
@@ -226,6 +230,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _db = await aiosqlite.connect(settings.database_url.replace("sqlite+aiosqlite:///", ""))
     await _db.executescript(DB_INIT_SQL)
     await _db.commit()
+
+    # Vector store
+    _vector_store = await create_vector_store(settings.vector_store_backend, db=_db)
 
     # Core pipeline components
     _detector = AutomationDetector(settings)
@@ -1877,6 +1884,49 @@ async def websocket_notifications(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
         log.info("websocket.disconnected", connections=ws_manager.active_connections)
+
+
+# ── Multi-agent status endpoint ──────────────────────────────────────────────
+
+@app.get("/multi-agent/status", response_model=MultiAgentStatusResponse, tags=["multi-agent"])
+async def multi_agent_status(
+    api_key: str = Depends(require_viewer),
+) -> MultiAgentStatusResponse:
+    """
+    Return the current multi-agent pipeline configuration.
+    Shows whether multi-agent is enabled and which agents are in the pipeline.
+    """
+    if settings.multi_agent_enabled:
+        return MultiAgentStatusResponse(
+            enabled=True,
+            agents=["analyser", "classifier", "validator"],
+            description="Analyser → Classifier → Validator pipeline",
+        )
+    return MultiAgentStatusResponse(
+        enabled=False,
+        agents=[],
+        description="Single LLM call (multi-agent disabled)",
+    )
+
+
+# ── Vector store status endpoint ─────────────────────────────────────────────
+
+@app.get("/vector-store/status", response_model=VectorStoreStatusResponse, tags=["vector-store"])
+async def vector_store_status(
+    api_key: str = Depends(require_viewer),
+) -> VectorStoreStatusResponse:
+    """
+    Return the current vector store backend and number of stored vectors.
+    """
+    total = 0
+    backend = "in_memory"
+    if _vector_store is not None:
+        total = await _vector_store.count()
+        backend = _vector_store.backend_name
+    return VectorStoreStatusResponse(
+        backend=backend,
+        total_vectors=total,
+    )
 
 
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
