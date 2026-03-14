@@ -2058,7 +2058,7 @@ async def auto_resolve_ticket(
                                     snippet=(art_row[3] or "")[:200],
                                 ))
             except Exception as e:  # noqa: BLE001
-                log.warning("auto_resolve.kb_search_failed", ticket_id=ticket_id, error=str(e))
+                log.warning("auto_resolve.kb_search_failed", ticket_id=ticket_id, error_type=type(e).__name__, error=str(e))
 
     # Use LLM to determine if the ticket can be auto-resolved
     from prompts import AUTO_RESOLVE_PROMPT, SYSTEM_PROMPT  # noqa: PLC0415
@@ -2134,7 +2134,7 @@ async def auto_resolve_ticket(
         else:
             resolution_summary = llm_data.get("resolution_summary", "Insufficient confidence for auto-resolution")
     except Exception as e:  # noqa: BLE001
-        log.warning("auto_resolve.llm_failed", ticket_id=ticket_id, error=str(e))
+        log.warning("auto_resolve.llm_failed", ticket_id=ticket_id, error_type=type(e).__name__, error=str(e))
         resolution_summary = "LLM processing failed"
 
     if _db:
