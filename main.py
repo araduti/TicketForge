@@ -6089,14 +6089,6 @@ async def kb_auto_generate_suggestions(
 
 # ── Visual Workflow Builder ──────────────────────────────────────────────────
 
-_ONBOARDING_STEPS = [
-    {"step_id": "create_api_key", "title": "Create an API Key", "description": "Generate your first API key to authenticate with TicketForge."},
-    {"step_id": "submit_ticket", "title": "Submit a Ticket", "description": "Submit your first ticket through the portal or API."},
-    {"step_id": "explore_kb", "title": "Explore Knowledge Base", "description": "Search and browse the knowledge base for helpful articles."},
-    {"step_id": "configure_sla", "title": "Configure SLA Policies", "description": "Set up SLA policies tailored to your team's needs."},
-    {"step_id": "setup_notifications", "title": "Set Up Notifications", "description": "Configure Slack or Teams notifications for ticket updates."},
-]
-
 
 @app.post(
     "/workflow-builder/workflows",
@@ -6604,7 +6596,7 @@ async def export_audit_logs(
         {
             "id": r[0],
             "timestamp": r[1],
-            "api_key_hash": r[2][:8] + "***" if r[2] and len(r[2]) > 8 else r[2],
+            "api_key_hash": r[2][:4] + "***" if r[2] else r[2],
             "role": r[3],
             "action": r[4],
             "resource": r[5],
@@ -6739,7 +6731,11 @@ async def invalidate_cache(
     body: CacheInvalidateRequest,
     api_key: str = Depends(require_admin),
 ) -> CacheInvalidateResponse:
-    """Invalidate cache entries matching a pattern."""
+    """Invalidate cache entries matching a pattern.
+
+    Note: The current cache is in-process memory. In multi-worker deployments,
+    each worker has its own cache and invalidation only affects the current worker.
+    """
     if not settings.performance_monitoring_enabled:
         raise HTTPException(
             status_code=403,
@@ -6868,6 +6864,14 @@ async def get_connection_pool_stats(
 
 
 # ── UX Polish — Preferences & Onboarding ────────────────────────────────────
+
+_ONBOARDING_STEPS = [
+    {"step_id": "create_api_key", "title": "Create an API Key", "description": "Generate your first API key to authenticate with TicketForge."},
+    {"step_id": "submit_ticket", "title": "Submit a Ticket", "description": "Submit your first ticket through the portal or API."},
+    {"step_id": "explore_kb", "title": "Explore Knowledge Base", "description": "Search and browse the knowledge base for helpful articles."},
+    {"step_id": "configure_sla", "title": "Configure SLA Policies", "description": "Set up SLA policies tailored to your team's needs."},
+    {"step_id": "setup_notifications", "title": "Set Up Notifications", "description": "Configure Slack or Teams notifications for ticket updates."},
+]
 
 
 @app.get(
