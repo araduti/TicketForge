@@ -251,6 +251,44 @@ class Settings(BaseSettings):
         description="Vector store backend: 'in_memory' (default) or 'persistent' (SQLite-backed)",
     )
 
+    # ── Auto-resolution ──────────────────────────────────────────────────────
+    auto_resolution_enabled: bool = Field(
+        default=False,
+        description="Enable AI-powered auto-resolution endpoint POST /tickets/{id}/auto-resolve",
+    )
+    auto_resolution_confidence_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence (0.0-1.0) for auto-resolution to proceed",
+    )
+
+    # ── Outbound webhook events (Zapier / Make / n8n) ────────────────────────
+    webhook_events_enabled: bool = Field(
+        default=False,
+        description="Enable structured webhook event delivery for integration with Zapier/Make/n8n",
+    )
+
+    # ── PagerDuty escalation ─────────────────────────────────────────────────
+    pagerduty_routing_key: str = Field(
+        default="",
+        description="PagerDuty Events API v2 routing key (integration key)",
+    )
+    pagerduty_auto_escalate: bool = Field(
+        default=False,
+        description="Automatically create PagerDuty incidents for critical tickets or SLA breaches",
+    )
+
+    # ── OpsGenie escalation ──────────────────────────────────────────────────
+    opsgenie_api_key: str = Field(
+        default="",
+        description="OpsGenie Alert API key",
+    )
+    opsgenie_auto_escalate: bool = Field(
+        default=False,
+        description="Automatically create OpsGenie alerts for critical tickets or SLA breaches",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
