@@ -5439,8 +5439,8 @@ async def train_custom_classifier(
         )
 
     new_total = current_samples + len(body.samples)
-    new_status = "ready" if new_total >= 10 else "untrained"
-    new_accuracy = min(0.65 + (new_total * 0.02), 0.95) if new_total >= 10 else 0.0
+    new_status = "ready" if new_total >= _CLASSIFIER_MIN_SAMPLES_READY else "untrained"
+    new_accuracy = min(_CLASSIFIER_BASE_ACCURACY + (new_total * _CLASSIFIER_ACCURACY_PER_SAMPLE), _CLASSIFIER_MAX_ACCURACY) if new_total >= _CLASSIFIER_MIN_SAMPLES_READY else 0.0
 
     await _db.execute(
         "UPDATE custom_classifiers SET training_samples = ?, status = ?, accuracy = ? WHERE id = ?",
@@ -5548,6 +5548,18 @@ async def classify_text(
 
 
 _VALID_ANOMALY_METRICS = {"volume", "category_shift", "priority_spike", "resolution_time"}
+_SEVERITY_CRITICAL_MULTIPLIER = 2.0
+_SEVERITY_HIGH_MULTIPLIER = 1.5
+
+_CLASSIFIER_MIN_SAMPLES_READY = 10
+_CLASSIFIER_BASE_ACCURACY = 0.65
+_CLASSIFIER_ACCURACY_PER_SAMPLE = 0.02
+_CLASSIFIER_MAX_ACCURACY = 0.95
+
+_KB_BASE_CONFIDENCE = 0.5
+_KB_CONFIDENCE_PER_TICKET = 0.05
+_KB_MAX_CONFIDENCE = 0.95
+_KB_MAX_SUMMARIES_PER_ARTICLE = 10
 
 
 @app.post(
@@ -5734,7 +5746,12 @@ async def detect_anomalies(
             if prev_count > 0:
                 ratio = current_count / prev_count
                 if ratio > (1 + rule_threshold):
-                    severity = "critical" if ratio > (1 + rule_threshold * 2) else "high" if ratio > (1 + rule_threshold * 1.5) else "medium"
+                    if ratio > (1 + rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER):
+                        severity = "critical"
+                    elif ratio > (1 + rule_threshold * _SEVERITY_HIGH_MULTIPLIER):
+                        severity = "high"
+                    else:
+                        severity = "medium"
                     anomalies.append(DetectedAnomaly(
                         anomaly_type="volume",
                         severity=severity,
@@ -5774,7 +5791,7 @@ async def detect_anomalies(
                     if shift > rule_threshold:
                         anomalies.append(DetectedAnomaly(
                             anomaly_type="category_shift",
-                            severity="medium" if shift < rule_threshold * 2 else "high",
+                            severity="medium" if shift < rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER else "high",
                             metric_value=round(shift, 4),
                             threshold=rule_threshold,
                             description=f"Category '{cat_name}' distribution shifted by {shift:.0%} (was {prev_ratio:.0%}, now {curr_ratio:.0%})",
@@ -5801,7 +5818,7 @@ async def detect_anomalies(
             if total_count > 0:
                 high_ratio = high_count / total_count
                 if high_ratio > rule_threshold:
-                    severity = "critical" if high_ratio > rule_threshold * 2 else "high"
+                    severity = "critical" if high_ratio > rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER else "high"
                     anomalies.append(DetectedAnomaly(
                         anomaly_type="priority_spike",
                         severity=severity,
@@ -5822,7 +5839,7 @@ async def detect_anomalies(
             avg_hours = avg_row[0] if avg_row and avg_row[0] is not None else 0.0
 
             if avg_hours > rule_threshold:
-                severity = "high" if avg_hours > rule_threshold * 2 else "medium"
+                severity = "high" if avg_hours > rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER else "medium"
                 anomalies.append(DetectedAnomaly(
                     anomaly_type="resolution_time",
                     severity=severity,
@@ -5900,7 +5917,7 @@ async def kb_auto_generate(
 
         # Use unique summaries as content
         seen: set[str] = set()
-        for summary in summaries[:10]:
+        for summary in summaries[:_KB_MAX_SUMMARIES_PER_ARTICLE]:
             normalised = summary.strip().lower()
             if normalised not in seen:
                 seen.add(normalised)
@@ -5908,7 +5925,7 @@ async def kb_auto_generate(
 
         content = "\n".join(content_parts)
 
-        confidence = min(0.5 + (len(tickets) * 0.05), 0.95)
+        confidence = min(_KB_BASE_CONFIDENCE + (len(tickets) * _KB_CONFIDENCE_PER_TICKET), _KB_MAX_CONFIDENCE)
         tags = [cat, "auto-generated", "resolved-patterns"]
 
         articles.append(GeneratedKBArticle(
