@@ -4488,7 +4488,7 @@ async def execute_macro(
 
         if action_type == "set_status" and "status" in params:
             await _db.execute(
-                "UPDATE processed_tickets SET status = ? WHERE id = ?",
+                "UPDATE processed_tickets SET ticket_status = ? WHERE id = ?",
                 (params["status"], ticket_id),
             )
             actions_performed.append(f"set_status:{params['status']}")

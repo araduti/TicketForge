@@ -81,6 +81,7 @@ async def client():
     _s.macros_enabled = True
     _s.ticket_tags_enabled = True
     _s.ticket_timeline_enabled = True
+    _s.portal_enabled = True
 
     async with lifespan(app):
         transport = ASGITransport(app=app)
@@ -96,14 +97,20 @@ async def client():
 
 # ── Helper: create a test ticket via the portal ──────────────────────────────
 
-async def _create_test_ticket(client: AsyncClient) -> str:
-    """Create a ticket and return its ID."""
+async def _create_test_ticket(client: AsyncClient, ticket_id: str = "P9-001") -> str:
+    """Create a test ticket via the portal endpoint and return its ID."""
+    from config import settings as _s  # noqa: PLC0415
+    _s.portal_enabled = True
     resp = await client.post(
         "/portal/tickets",
-        json={"subject": "Test ticket", "description": "A test ticket for phase 9"},
-        headers={"X-Api-Key": "analyst-key"},
+        headers={"X-Api-Key": "viewer-key"},
+        json={
+            "title": f"Phase 9 test ticket ({ticket_id})",
+            "description": "Testing Phase 9 features — categorisation and authorisation checks.",
+            "reporter_email": "test@example.com",
+        },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200 or resp.status_code == 201
     return resp.json()["ticket_id"]
 
 
