@@ -5250,6 +5250,11 @@ async def get_volume_forecast(
 
 # ── Phase 10b: Custom classifiers ────────────────────────────────────────────
 
+_CLASSIFIER_MIN_SAMPLES_READY = 10
+_CLASSIFIER_BASE_ACCURACY = 0.65
+_CLASSIFIER_ACCURACY_PER_SAMPLE = 0.02
+_CLASSIFIER_MAX_ACCURACY = 0.95
+
 
 @app.post(
     "/custom-classifiers",
@@ -5551,16 +5556,6 @@ _VALID_ANOMALY_METRICS = {"volume", "category_shift", "priority_spike", "resolut
 _SEVERITY_CRITICAL_MULTIPLIER = 2.0
 _SEVERITY_HIGH_MULTIPLIER = 1.5
 
-_CLASSIFIER_MIN_SAMPLES_READY = 10
-_CLASSIFIER_BASE_ACCURACY = 0.65
-_CLASSIFIER_ACCURACY_PER_SAMPLE = 0.02
-_CLASSIFIER_MAX_ACCURACY = 0.95
-
-_KB_BASE_CONFIDENCE = 0.5
-_KB_CONFIDENCE_PER_TICKET = 0.05
-_KB_MAX_CONFIDENCE = 0.95
-_KB_MAX_SUMMARIES_PER_ARTICLE = 10
-
 
 @app.post(
     "/anomaly-rules",
@@ -5830,9 +5825,9 @@ async def detect_anomalies(
                     ))
 
         elif rule_metric == "resolution_time":
-            # Detect unusually slow resolution times
+            # Detect unusually long open ticket age (hours since processing)
             async with _db.execute(
-                "SELECT AVG(CAST((julianday(processed_at) - julianday(processed_at)) * 24 AS REAL)) FROM processed_tickets WHERE processed_at >= ? AND ticket_status = 'resolved'",
+                "SELECT AVG(CAST((julianday('now') - julianday(processed_at)) * 24 AS REAL)) FROM processed_tickets WHERE processed_at >= ? AND ticket_status IN ('open', 'in_progress')",
                 (window_start,),
             ) as cur:
                 avg_row = await cur.fetchone()
@@ -5858,6 +5853,11 @@ async def detect_anomalies(
 
 
 # ── Phase 10b: KB auto-generation ────────────────────────────────────────────
+
+_KB_BASE_CONFIDENCE = 0.5
+_KB_CONFIDENCE_PER_TICKET = 0.05
+_KB_MAX_CONFIDENCE = 0.95
+_KB_MAX_SUMMARIES_PER_ARTICLE = 10
 
 
 @app.post(
