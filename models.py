@@ -1015,3 +1015,206 @@ class AgentRecommendationResponse(BaseModel):
     ticket_id: str = Field(default="")
     recommendations: list[AgentRecommendation] = Field(default_factory=list)
 
+
+# ── Phase 9: Automation rules ────────────────────────────────────────────────
+
+class AutomationRuleCondition(BaseModel):
+    """A single condition in an automation rule."""
+
+    field: str = Field(..., description="Ticket field to evaluate (e.g. priority, category, sentiment)")
+    operator: str = Field(..., description="Comparison operator (equals, not_equals, contains, in)")
+    value: str = Field(..., description="Value to compare against")
+
+
+class AutomationRuleAction(BaseModel):
+    """An action to perform when rule conditions are met."""
+
+    action_type: str = Field(..., description="Action type (set_priority, set_status, add_tag, notify_slack, escalate_pagerduty)")
+    parameters: dict[str, str] = Field(default_factory=dict, description="Action parameters")
+
+
+class AutomationRuleCreate(BaseModel):
+    """POST /automation-rules — create a workflow automation rule."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Rule name")
+    description: str = Field(default="", max_length=1000, description="Rule description")
+    conditions: list[AutomationRuleCondition] = Field(..., min_length=1, description="Conditions (all must match)")
+    actions: list[AutomationRuleAction] = Field(..., min_length=1, description="Actions to execute when conditions match")
+    enabled: bool = Field(default=True, description="Whether the rule is active")
+
+
+class AutomationRuleRecord(BaseModel):
+    """Stored automation rule record."""
+
+    id: str = Field(..., description="Unique rule ID")
+    name: str
+    description: str = ""
+    conditions: list[AutomationRuleCondition] = Field(default_factory=list)
+    actions: list[AutomationRuleAction] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class AutomationRuleResponse(BaseModel):
+    success: bool = True
+    data: AutomationRuleRecord
+
+
+class AutomationRuleListResponse(BaseModel):
+    success: bool = True
+    rules: list[AutomationRuleRecord] = Field(default_factory=list)
+
+
+# ── Phase 9: Approval workflows ──────────────────────────────────────────────
+
+class ApprovalStatus(str, Enum):
+    """Status of an approval request."""
+
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+
+class ApprovalRequestCreate(BaseModel):
+    """POST /tickets/{id}/approval-request — request approval for a ticket."""
+
+    approver: str = Field(..., min_length=1, max_length=200, description="Approver identifier")
+    reason: str = Field(default="", max_length=2000, description="Reason for the approval request")
+
+
+class ApprovalDecision(BaseModel):
+    """POST /tickets/{id}/approve — approve or reject a ticket."""
+
+    decision: ApprovalStatus = Field(..., description="Approval decision (approved or rejected)")
+    comment: str = Field(default="", max_length=2000, description="Decision comment")
+
+
+class ApprovalRecord(BaseModel):
+    """Stored approval record."""
+
+    id: str = Field(..., description="Unique approval ID")
+    ticket_id: str
+    approver: str
+    reason: str = ""
+    status: ApprovalStatus = ApprovalStatus.pending
+    decision_comment: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+    decided_at: datetime | None = None
+
+
+class ApprovalResponse(BaseModel):
+    success: bool = True
+    data: ApprovalRecord
+
+
+class ApprovalListResponse(BaseModel):
+    success: bool = True
+    approvals: list[ApprovalRecord] = Field(default_factory=list)
+
+
+# ── Phase 9: Agent collision detection ────────────────────────────────────────
+
+class TicketLockCreate(BaseModel):
+    """POST /tickets/{id}/lock — lock a ticket for exclusive editing."""
+
+    agent_id: str = Field(..., min_length=1, max_length=200, description="Agent acquiring the lock")
+
+
+class TicketLockRecord(BaseModel):
+    """Stored ticket lock record."""
+
+    id: str = Field(..., description="Unique lock ID")
+    ticket_id: str
+    agent_id: str
+    acquired_at: datetime = Field(default_factory=_utcnow)
+    expires_at: datetime = Field(default_factory=_utcnow)
+
+
+class TicketLockResponse(BaseModel):
+    success: bool = True
+    data: TicketLockRecord | None = None
+    locked: bool = False
+
+
+# ── Phase 9: Contact management ──────────────────────────────────────────────
+
+class ContactCreate(BaseModel):
+    """POST /contacts — register a customer contact."""
+
+    email: str = Field(..., min_length=1, max_length=300, description="Contact email address")
+    name: str = Field(..., min_length=1, max_length=200, description="Contact display name")
+    organisation: str = Field(default="", max_length=200, description="Organisation name")
+    phone: str = Field(default="", max_length=50, description="Phone number")
+    notes: str = Field(default="", max_length=2000, description="Internal notes about the contact")
+
+
+class ContactRecord(BaseModel):
+    """Stored contact record."""
+
+    id: str = Field(..., description="Unique contact ID")
+    email: str
+    name: str
+    organisation: str = ""
+    phone: str = ""
+    notes: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ContactResponse(BaseModel):
+    success: bool = True
+    data: ContactRecord
+
+
+class ContactListResponse(BaseModel):
+    success: bool = True
+    contacts: list[ContactRecord] = Field(default_factory=list)
+
+
+class ContactTicketsResponse(BaseModel):
+    success: bool = True
+    contact_id: str = Field(default="")
+    ticket_ids: list[str] = Field(default_factory=list)
+
+
+# ── Phase 9: Macros ───────────────────────────────────────────────────────────
+
+class MacroAction(BaseModel):
+    """A single action within a macro."""
+
+    action_type: str = Field(..., description="Action type (set_status, set_priority, add_tag, remove_tag, add_comment)")
+    parameters: dict[str, str] = Field(default_factory=dict, description="Action parameters")
+
+
+class MacroCreate(BaseModel):
+    """POST /macros — create a reusable macro."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Macro name")
+    description: str = Field(default="", max_length=1000, description="Macro description")
+    actions: list[MacroAction] = Field(..., min_length=1, description="Actions to perform")
+
+
+class MacroRecord(BaseModel):
+    """Stored macro record."""
+
+    id: str = Field(..., description="Unique macro ID")
+    name: str
+    description: str = ""
+    actions: list[MacroAction] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class MacroResponse(BaseModel):
+    success: bool = True
+    data: MacroRecord
+
+
+class MacroListResponse(BaseModel):
+    success: bool = True
+    macros: list[MacroRecord] = Field(default_factory=list)
+
+
+class MacroExecuteResponse(BaseModel):
+    success: bool = True
+    ticket_id: str = Field(default="")
+    actions_performed: list[str] = Field(default_factory=list)
+

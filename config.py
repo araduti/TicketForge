@@ -349,6 +349,36 @@ class Settings(BaseSettings):
         description="Enable agent skill-based routing (POST/GET /agent-skills, GET /tickets/{id}/recommended-agents)",
     )
 
+    # ── Phase 9: Automation rules ──────────────────────────────────────────────
+    automation_rules_enabled: bool = Field(
+        default=False,
+        description="Enable workflow automation rules (POST/GET/DELETE /automation-rules)",
+    )
+
+    # ── Phase 9: Approval workflows ────────────────────────────────────────────
+    approval_workflows_enabled: bool = Field(
+        default=False,
+        description="Enable ticket approval workflows (POST /tickets/{id}/approval-request, POST /tickets/{id}/approve)",
+    )
+
+    # ── Phase 9: Agent collision detection ─────────────────────────────────────
+    collision_detection_enabled: bool = Field(
+        default=False,
+        description="Enable agent collision detection (POST/DELETE/GET /tickets/{id}/lock)",
+    )
+
+    # ── Phase 9: Contact management ────────────────────────────────────────────
+    contact_management_enabled: bool = Field(
+        default=False,
+        description="Enable customer contact management (POST/GET /contacts, GET /contacts/{id}/tickets)",
+    )
+
+    # ── Phase 9: Macros ────────────────────────────────────────────────────────
+    macros_enabled: bool = Field(
+        default=False,
+        description="Enable macros for common ticket operations (POST/GET/DELETE /macros, POST /macros/{id}/execute)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

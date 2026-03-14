@@ -344,6 +344,17 @@ These add predictive capabilities and workflow efficiency features for agents an
 | 34 | **Add bulk operations** (`POST /tickets/bulk/status`, `POST /tickets/bulk/tags` for batch ticket management) | Medium | High | ✅ Done |
 | 35 | **Add agent skill-based routing** (`POST/GET /agent-skills`, `GET /tickets/{id}/recommended-agents` for intelligent assignment) | High | High | ✅ Done |
 
+### Phase 9: Enterprise Workflow & Automation (16-18 months)
+These add enterprise workflow capabilities that streamline operations for large-scale deployments:
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 36 | **Add workflow automation rules** (`POST/GET/DELETE /automation-rules` for configurable if/then rules to automate ticket actions) | Medium | High | ✅ Done |
+| 37 | **Add approval workflows** (`POST /tickets/{id}/approval-request`, `POST /tickets/{id}/approve`, `GET /tickets/{id}/approvals` for multi-step approvals) | Medium | High | ✅ Done |
+| 38 | **Add agent collision detection** (`POST/DELETE/GET /tickets/{id}/lock` to prevent multiple agents editing the same ticket) | Low | Medium | ✅ Done |
+| 39 | **Add customer contact management** (`POST/GET /contacts`, `GET /contacts/{id}/tickets` for requester tracking across tickets) | Medium | Medium | ✅ Done |
+| 40 | **Add macros** (`POST/GET/DELETE /macros`, `POST /macros/{id}/execute` for pre-defined action sequences on tickets) | Medium | High | ✅ Done |
+
 ### Prioritization Framework
 
 ```
