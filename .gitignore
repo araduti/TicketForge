@@ -38,3 +38,4 @@ ENV/
 # Test artifacts
 .pytest_cache/
 test_ticketforge.db
+test_output.txt

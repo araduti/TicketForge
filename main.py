@@ -50,10 +50,19 @@ from models import (
     DetectDuplicatesRequest,
     DetectDuplicatesResponse,
     DuplicateCandidate,
+    EmailIngestRequest,
     EnrichedTicket,
     ErrorResponse,
     ExportFormat,
     HealthResponse,
+    KBArticleCreate,
+    KBArticleListResponse,
+    KBArticleRecord,
+    KBArticleResponse,
+    KBArticleUpdate,
+    KBSearchRequest,
+    KBSearchResponse,
+    KBSearchResult,
     Priority,
     PriorityCount,
     PriorityResult,
@@ -134,6 +143,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
     resource TEXT NOT NULL,
     status_code INTEGER NOT NULL DEFAULT 200,
     detail TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS kb_articles (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    tags TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -719,6 +738,401 @@ def _compute_similarities(
 
     results.sort(key=lambda x: x.similarity_score, reverse=True)
     return results[:max_results]
+
+
+# ── Knowledge Base CRUD endpoints ─────────────────────────────────────────────
+
+@app.post(
+    "/kb/articles",
+    response_model=KBArticleResponse,
+    tags=["knowledge-base"],
+    status_code=201,
+)
+async def create_kb_article(
+    body: KBArticleCreate,
+    api_key: str = Depends(require_analyst),
+) -> KBArticleResponse:
+    """
+    Create a new knowledge base article.
+    Requires analyst or admin role.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
+
+    article_id = f"KB-{uuid.uuid4().hex[:12]}"
+    now = datetime.now(tz=timezone.utc)
+    tags_json = _json.dumps(body.tags)
+
+    await _db.execute(
+        "INSERT INTO kb_articles (id, title, content, category, tags, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (article_id, body.title, body.content, body.category, tags_json,
+         now.isoformat(), now.isoformat()),
+    )
+    await _db.commit()
+
+    article = KBArticleRecord(
+        id=article_id,
+        title=body.title,
+        content=body.content,
+        category=body.category,
+        tags=body.tags,
+        created_at=now,
+        updated_at=now,
+    )
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="create_kb_article",
+            resource=article_id,
+        )
+    return KBArticleResponse(data=article)
+
+
+@app.get(
+    "/kb/articles",
+    response_model=KBArticleListResponse,
+    tags=["knowledge-base"],
+)
+async def list_kb_articles(
+    category: str | None = Query(default=None, description="Filter by category"),
+    api_key: str = Depends(require_viewer),
+) -> KBArticleListResponse:
+    """
+    List all knowledge base articles, optionally filtered by category.
+    Requires viewer role or higher.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    if category:
+        sql = "SELECT id, title, content, category, tags, created_at, updated_at FROM kb_articles WHERE category = ? ORDER BY updated_at DESC"
+        params: tuple = (category,)
+    else:
+        sql = "SELECT id, title, content, category, tags, created_at, updated_at FROM kb_articles ORDER BY updated_at DESC"
+        params = ()
+
+    async with _db.execute(sql, params) as cursor:
+        rows = await cursor.fetchall()
+
+    articles = []
+    for row in rows:
+        try:
+            tags = _json.loads(row[4]) if row[4] else []
+        except (ValueError, TypeError):
+            tags = []
+        articles.append(KBArticleRecord(
+            id=row[0],
+            title=row[1],
+            content=row[2],
+            category=row[3],
+            tags=tags,
+            created_at=datetime.fromisoformat(row[5]),
+            updated_at=datetime.fromisoformat(row[6]),
+        ))
+
+    return KBArticleListResponse(data=articles, total=len(articles))
+
+
+@app.get(
+    "/kb/articles/{article_id}",
+    response_model=KBArticleResponse,
+    tags=["knowledge-base"],
+)
+async def get_kb_article(
+    article_id: str,
+    api_key: str = Depends(require_viewer),
+) -> KBArticleResponse:
+    """
+    Retrieve a single knowledge base article by ID.
+    Requires viewer role or higher.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, title, content, category, tags, created_at, updated_at "
+        "FROM kb_articles WHERE id = ?",
+        (article_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Knowledge base article not found")
+
+    try:
+        tags = _json.loads(row[4]) if row[4] else []
+    except (ValueError, TypeError):
+        tags = []
+
+    article = KBArticleRecord(
+        id=row[0],
+        title=row[1],
+        content=row[2],
+        category=row[3],
+        tags=tags,
+        created_at=datetime.fromisoformat(row[5]),
+        updated_at=datetime.fromisoformat(row[6]),
+    )
+    return KBArticleResponse(data=article)
+
+
+@app.put(
+    "/kb/articles/{article_id}",
+    response_model=KBArticleResponse,
+    tags=["knowledge-base"],
+)
+async def update_kb_article(
+    article_id: str,
+    body: KBArticleUpdate,
+    api_key: str = Depends(require_analyst),
+) -> KBArticleResponse:
+    """
+    Update an existing knowledge base article.
+    Only provided fields are updated. Requires analyst or admin role.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, title, content, category, tags, created_at, updated_at "
+        "FROM kb_articles WHERE id = ?",
+        (article_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Knowledge base article not found")
+
+    # Apply partial updates
+    new_title = body.title if body.title is not None else row[1]
+    new_content = body.content if body.content is not None else row[2]
+    new_category = body.category if body.category is not None else row[3]
+    if body.tags is not None:
+        new_tags_json = _json.dumps(body.tags)
+        new_tags = body.tags
+    else:
+        new_tags_json = row[4]
+        try:
+            new_tags = _json.loads(row[4]) if row[4] else []
+        except (ValueError, TypeError):
+            new_tags = []
+
+    now = datetime.now(tz=timezone.utc)
+    await _db.execute(
+        "UPDATE kb_articles SET title = ?, content = ?, category = ?, tags = ?, updated_at = ? "
+        "WHERE id = ?",
+        (new_title, new_content, new_category, new_tags_json, now.isoformat(), article_id),
+    )
+    await _db.commit()
+
+    article = KBArticleRecord(
+        id=article_id,
+        title=new_title,
+        content=new_content,
+        category=new_category,
+        tags=new_tags,
+        created_at=datetime.fromisoformat(row[5]),
+        updated_at=now,
+    )
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="update_kb_article",
+            resource=article_id,
+        )
+    return KBArticleResponse(data=article)
+
+
+@app.delete(
+    "/kb/articles/{article_id}",
+    tags=["knowledge-base"],
+)
+async def delete_kb_article(
+    article_id: str,
+    api_key: str = Depends(require_admin),
+):
+    """
+    Delete a knowledge base article. Admin only.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM kb_articles WHERE id = ?", (article_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Knowledge base article not found")
+
+    await _db.execute("DELETE FROM kb_articles WHERE id = ?", (article_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_kb_article",
+        resource=article_id,
+    )
+    return {"success": True, "deleted": article_id}
+
+
+# ── Knowledge Base Semantic Search endpoint ───────────────────────────────────
+
+@app.post(
+    "/kb/search",
+    response_model=KBSearchResponse,
+    tags=["knowledge-base"],
+)
+async def search_kb(
+    body: KBSearchRequest,
+    api_key: str = Depends(require_viewer),
+) -> KBSearchResponse:
+    """
+    Semantic search over knowledge base articles using vector similarity.
+    Uses sentence-transformer embeddings to find articles relevant to the query.
+    Requires viewer role or higher.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    if _detector is None:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    # Fetch all articles
+    async with _db.execute(
+        "SELECT id, title, content, category FROM kb_articles"
+    ) as cursor:
+        articles = await cursor.fetchall()
+
+    if not articles:
+        return KBSearchResponse(query=body.query, results=[], total=0)
+
+    # Compute similarities in a thread to avoid blocking the event loop
+    try:
+        results = await asyncio.get_event_loop().run_in_executor(
+            None,
+            _compute_kb_similarities,
+            body.query,
+            articles,
+            body.threshold,
+            body.max_results,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("kb_search.embedding_failed", error=str(e))
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding model not available for semantic search",
+        ) from e
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="search_kb",
+            resource="kb_search",
+            detail=f"query_len={len(body.query)}, found={len(results)}",
+        )
+    return KBSearchResponse(query=body.query, results=results, total=len(results))
+
+
+def _compute_kb_similarities(
+    query_text: str,
+    articles: list[tuple],
+    threshold: float,
+    max_results: int,
+) -> list[KBSearchResult]:
+    """Compute cosine similarity between query and KB article texts."""
+    import numpy as np  # noqa: PLC0415
+    from sklearn.preprocessing import normalize  # noqa: PLC0415
+
+    model = _detector.get_embedding_model()
+    # Combine title + content for embedding
+    texts = [query_text] + [f"{a[1]}\n{a[2]}" for a in articles]
+    embeddings = model.encode(texts, show_progress_bar=False, batch_size=32)
+    embeddings = normalize(embeddings)
+
+    query_emb = embeddings[0:1]
+    article_embs = embeddings[1:]
+
+    similarities = np.dot(article_embs, query_emb.T).flatten()
+
+    results = []
+    for i, sim in enumerate(similarities):
+        if sim >= threshold:
+            content_preview = articles[i][2][:200] if articles[i][2] else ""
+            results.append(KBSearchResult(
+                article_id=articles[i][0],
+                title=articles[i][1],
+                category=articles[i][3] or "",
+                relevance_score=round(float(sim), 4),
+                snippet=content_preview,
+            ))
+
+    results.sort(key=lambda x: x.relevance_score, reverse=True)
+    return results[:max_results]
+
+
+# ── Email Ingestion endpoint ──────────────────────────────────────────────────
+
+@app.post(
+    "/ingest/email",
+    response_model=AnalyseResponse,
+    tags=["email"],
+)
+async def ingest_email(
+    body: EmailIngestRequest,
+    api_key: str = Depends(require_analyst),
+) -> AnalyseResponse:
+    """
+    Ingest a ticket from an inbound email webhook (SendGrid, Mailgun, or generic).
+    Parses the email into a RawTicket and runs it through the analysis pipeline.
+    Requires analyst or admin role. Must be enabled via EMAIL_INGESTION_ENABLED=true.
+    """
+    if not settings.email_ingestion_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Email ingestion is not enabled. Set EMAIL_INGESTION_ENABLED=true.",
+        )
+
+    from email_ingestion import parse_email_to_ticket  # noqa: PLC0415
+
+    processor = _get_processor()
+    ticket = parse_email_to_ticket(body)
+    enriched = await processor.process(ticket, include_automation=True)
+    enriched.sla = compute_sla(enriched.priority.priority, ticket.created_at)
+    await _persist_ticket(enriched)
+
+    # Fire-and-forget notifications
+    asyncio.create_task(send_notifications(enriched, settings))
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="email_ingest",
+            resource=f"email:{enriched.ticket_id}",
+            detail=f"from={body.sender}",
+        )
+    return AnalyseResponse(data=enriched)
 
 
 # ── Analytics endpoint ────────────────────────────────────────────────────────
