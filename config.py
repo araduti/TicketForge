@@ -183,6 +183,40 @@ class Settings(BaseSettings):
         description="Default priority for tickets created from emails",
     )
 
+    # ── Chatbot ───────────────────────────────────────────────────────────────
+    chatbot_enabled: bool = Field(
+        default=True,
+        description="Enable the POST /chat chatbot endpoint",
+    )
+    chatbot_max_history: int = Field(
+        default=20,
+        description="Maximum conversation messages kept per session",
+    )
+
+    # ── Self-service portal ───────────────────────────────────────────────────
+    portal_enabled: bool = Field(
+        default=True,
+        description="Enable the GET /portal self-service endpoint",
+    )
+
+    # ── Model monitoring ──────────────────────────────────────────────────────
+    monitoring_enabled: bool = Field(
+        default=True,
+        description="Enable the GET /monitoring/drift endpoint",
+    )
+    monitoring_baseline_days: int = Field(
+        default=30,
+        description="Baseline period in days for drift comparison",
+    )
+    monitoring_window_days: int = Field(
+        default=7,
+        description="Recent monitoring window in days",
+    )
+    drift_threshold: float = Field(
+        default=0.3,
+        description="Drift score threshold (0.0-1.0) above which a field is flagged as drifting",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

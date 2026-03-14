@@ -46,9 +46,12 @@ from models import (
     BulkAnalyseResponse,
     CategoryCount,
     CategoryResult,
+    ChatRequest,
+    ChatResponse,
     DailyTrend,
     DetectDuplicatesRequest,
     DetectDuplicatesResponse,
+    DriftMetric,
     DuplicateCandidate,
     EmailIngestRequest,
     EnrichedTicket,
@@ -63,6 +66,11 @@ from models import (
     KBSearchRequest,
     KBSearchResponse,
     KBSearchResult,
+    MonitoringResponse,
+    PluginInfo,
+    PluginListResponse,
+    PortalTicketResponse,
+    PortalTicketSubmission,
     Priority,
     PriorityCount,
     PriorityResult,
@@ -1300,6 +1308,265 @@ async def export_tickets(
     return JSONResponse(content={"tickets": data, "total": len(data)})
 
 
+# ── Chatbot endpoint ─────────────────────────────────────────────────────────
+
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+    tags=["chatbot"],
+)
+async def chat(
+    body: ChatRequest,
+    api_key: str = Depends(require_viewer),
+) -> ChatResponse:
+    """
+    Send a message to the TicketForge chatbot.
+
+    The chatbot can help with:
+    - Creating tickets (describe your issue)
+    - Checking ticket status (provide a ticket ID)
+    - Searching the knowledge base (ask how-to questions)
+    - General IT support queries
+
+    Supports multi-turn conversations via session_id.
+    Requires viewer role or higher.
+    """
+    if not settings.chatbot_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Chatbot is not enabled. Set CHATBOT_ENABLED=true.",
+        )
+
+    from chatbot import (  # noqa: PLC0415
+        add_message,
+        detect_intent,
+        generate_response,
+        get_or_create_session,
+    )
+
+    session_id = get_or_create_session(body.session_id)
+
+    # Record user message
+    add_message(session_id, "user", body.message)
+
+    # Detect intent and generate response
+    intent = detect_intent(body.message)
+    result = generate_response(intent, body.message, session_id, body.context)
+
+    # Record assistant response
+    add_message(session_id, "assistant", result["reply"])
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="chat",
+            resource=session_id,
+            detail=f"intent={intent}",
+        )
+    return ChatResponse(
+        session_id=session_id,
+        reply=result["reply"],
+        intent=result["intent"],
+        suggested_actions=result.get("suggested_actions", []),
+        data=result.get("data", {}),
+    )
+
+
+# ── Model Monitoring endpoint ────────────────────────────────────────────────
+
+@app.get(
+    "/monitoring/drift",
+    response_model=MonitoringResponse,
+    tags=["monitoring"],
+)
+async def get_drift_metrics(
+    api_key: str = Depends(require_admin),
+) -> MonitoringResponse:
+    """
+    Analyse prediction drift by comparing recent ticket analysis distributions
+    against a baseline period. Monitors category, priority, and sentiment fields.
+
+    Admin only.
+    """
+    if not settings.monitoring_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Model monitoring is not enabled. Set MONITORING_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    from monitoring import compute_drift_metrics  # noqa: PLC0415
+
+    result = await compute_drift_metrics(
+        _db,
+        baseline_days=settings.monitoring_baseline_days,
+        window_days=settings.monitoring_window_days,
+        drift_threshold=settings.drift_threshold,
+    )
+
+    metrics = [
+        DriftMetric(
+            field=m["field"],
+            current_distribution=m["current_distribution"],
+            baseline_distribution=m["baseline_distribution"],
+            drift_score=m["drift_score"],
+            is_drifting=m["is_drifting"],
+        )
+        for m in result["metrics"]
+    ]
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="monitoring_drift",
+        resource="drift_check",
+        detail=f"health={result['overall_health']}",
+    )
+    return MonitoringResponse(
+        metrics=metrics,
+        total_tickets_analysed=result["total_tickets_analysed"],
+        baseline_period_days=result["baseline_period_days"],
+        monitoring_period_days=result["monitoring_period_days"],
+        overall_health=result["overall_health"],
+    )
+
+
+# ── Plugin system endpoints ──────────────────────────────────────────────────
+
+@app.get(
+    "/plugins",
+    response_model=PluginListResponse,
+    tags=["plugins"],
+)
+async def list_plugins(
+    api_key: str = Depends(require_admin),
+) -> PluginListResponse:
+    """
+    List all registered plugins and their status.
+    Admin only.
+    """
+    from plugin_system import plugin_registry  # noqa: PLC0415
+
+    plugins_data = plugin_registry.list_plugins()
+    plugins = [
+        PluginInfo(
+            name=p["name"],
+            version=p["version"],
+            description=p["description"],
+            hook=p["hook"],
+            enabled=p["enabled"],
+        )
+        for p in plugins_data
+    ]
+    return PluginListResponse(plugins=plugins, total=len(plugins))
+
+
+# ── Self-Service Portal endpoints ────────────────────────────────────────────
+
+@app.post(
+    "/portal/tickets",
+    response_model=PortalTicketResponse,
+    tags=["portal"],
+    status_code=201,
+)
+async def portal_submit_ticket(
+    body: PortalTicketSubmission,
+    api_key: str = Depends(require_viewer),
+) -> PortalTicketResponse:
+    """
+    Submit a ticket from the self-service portal.
+
+    Creates a ticket, runs it through the analysis pipeline,
+    and returns relevant KB articles that may help resolve the issue.
+    Requires viewer role or higher.
+    """
+    if not settings.portal_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-service portal is not enabled. Set PORTAL_ENABLED=true.",
+        )
+
+    import uuid  # noqa: PLC0415
+
+    ticket_id = f"PORTAL-{uuid.uuid4().hex[:12]}"
+    ticket = RawTicket(
+        id=ticket_id,
+        source=TicketSource.generic,
+        title=body.title,
+        description=body.description,
+        reporter=body.reporter_email,
+        tags=["portal"],
+    )
+
+    # Try to find relevant KB articles
+    suggested_articles: list[KBSearchResult] = []
+    if _db and _detector:
+        try:
+            async with _db.execute(
+                "SELECT id, title, content, category FROM kb_articles"
+            ) as cursor:
+                articles = await cursor.fetchall()
+            if articles:
+                results = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    _compute_kb_similarities,
+                    f"{body.title}\n{body.description}",
+                    articles,
+                    0.3,
+                    3,
+                )
+                suggested_articles = results
+        except Exception as e:  # noqa: BLE001
+            log.warning("portal.kb_search_failed", error=str(e))
+
+    # Persist the ticket in the database
+    if _db:
+        now = datetime.now(tz=timezone.utc)
+        try:
+            await _db.execute(
+                """
+                INSERT OR REPLACE INTO processed_tickets
+                    (id, source, processed_at, category, priority, automation_score, summary,
+                     sentiment, detected_language, ticket_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticket_id,
+                    "generic",
+                    now.isoformat(),
+                    body.category or "pending",
+                    "medium",
+                    0,
+                    body.title,
+                    "neutral",
+                    "en",
+                    "open",
+                ),
+            )
+            await _db.commit()
+        except Exception as e:  # noqa: BLE001
+            log.warning("portal.persist_failed", ticket_id=ticket_id, error=str(e))
+
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="portal_submit_ticket",
+            resource=ticket_id,
+            detail=f"reporter={body.reporter_email}",
+        )
+
+    return PortalTicketResponse(
+        ticket_id=ticket_id,
+        message=f"Your ticket {ticket_id} has been submitted successfully.",
+        suggested_articles=suggested_articles,
+    )
+
+
 # ── Dashboard endpoint ────────────────────────────────────────────────────────
 
 @app.get("/dashboard", response_class=HTMLResponse, tags=["ui"])
@@ -1310,6 +1577,21 @@ async def dashboard():
     No authentication required for the HTML shell — data is fetched via authenticated API calls.
     """
     return HTMLResponse(content=_DASHBOARD_HTML.replace("{{APP_VERSION}}", APP_VERSION))
+
+
+@app.get("/portal", response_class=HTMLResponse, tags=["portal"])
+async def portal():
+    """
+    Serve the self-service portal page.
+    Allows users to submit tickets, check status, search the knowledge base,
+    and chat with the TicketForge assistant.
+    """
+    if not settings.portal_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-service portal is not enabled. Set PORTAL_ENABLED=true.",
+        )
+    return HTMLResponse(content=_PORTAL_HTML.replace("{{APP_VERSION}}", APP_VERSION))
 
 
 @app.exception_handler(Exception)
@@ -1587,6 +1869,297 @@ function renderSLA(tickets){
 }
 
 function esc(s){ const d=document.createElement("div"); d.textContent=s||""; return d.innerHTML; }
+</script>
+</body>
+</html>
+"""
+
+
+# ── Self-Service Portal HTML template ────────────────────────────────────────
+
+_PORTAL_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TicketForge Self-Service Portal</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f7fa;color:#333}
+.header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:1rem 2rem;display:flex;align-items:center;gap:1rem}
+.header h1{font-size:1.4rem;font-weight:600}
+.header .version{font-size:.75rem;background:rgba(255,255,255,.15);padding:2px 8px;border-radius:10px}
+.header nav{margin-left:auto;display:flex;gap:1rem}
+.header nav a{color:#a0c4ff;text-decoration:none;font-size:.85rem}
+.header nav a:hover{color:#fff}
+.api-bar{background:#fff;border-bottom:1px solid #e0e0e0;padding:.75rem 2rem;display:flex;gap:.75rem;align-items:center}
+.api-bar input{flex:1;max-width:320px;padding:.4rem .75rem;border:1px solid #ccc;border-radius:4px;font-size:.85rem}
+.api-bar .status{font-size:.8rem;color:#666}
+.container{max-width:1000px;margin:0 auto;padding:1.5rem 2rem}
+.tabs{display:flex;gap:0;margin-bottom:1.5rem;border-bottom:2px solid #e0e0e0}
+.tab{padding:.75rem 1.5rem;cursor:pointer;font-size:.9rem;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-2px;color:#666}
+.tab.active{color:#1a73e8;border-bottom-color:#1a73e8}
+.tab:hover{color:#333}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.form-group{margin-bottom:1rem}
+.form-group label{display:block;font-size:.85rem;font-weight:600;margin-bottom:.25rem;color:#555}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:.5rem .75rem;border:1px solid #ccc;border-radius:4px;font-size:.9rem;font-family:inherit}
+.form-group textarea{min-height:120px;resize:vertical}
+.btn{padding:.5rem 1.25rem;background:#1a73e8;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.9rem;font-weight:500}
+.btn:hover{background:#1557b0}
+.btn-secondary{background:#6c757d}
+.btn-secondary:hover{background:#5a6268}
+.card{background:#fff;border-radius:8px;padding:1.25rem;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:1rem}
+.card h3{font-size:1rem;margin-bottom:.75rem;color:#333}
+.result-msg{padding:.75rem;border-radius:4px;margin-top:1rem;font-size:.9rem}
+.result-msg.success{background:#e8f5e9;color:#2e7d32;border:1px solid #c8e6c9}
+.result-msg.error{background:#fde8e8;color:#c53030;border:1px solid #f5c6cb}
+.chat-container{display:flex;flex-direction:column;height:500px}
+.chat-messages{flex:1;overflow-y:auto;padding:1rem;background:#fafafa;border:1px solid #e0e0e0;border-radius:4px 4px 0 0}
+.chat-input{display:flex;gap:.5rem;padding:.75rem;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 4px 4px}
+.chat-input input{flex:1;padding:.5rem .75rem;border:1px solid #ccc;border-radius:4px;font-size:.9rem}
+.chat-msg{margin-bottom:.75rem;display:flex;gap:.5rem}
+.chat-msg.user{justify-content:flex-end}
+.chat-msg .bubble{max-width:70%;padding:.5rem .75rem;border-radius:12px;font-size:.85rem;line-height:1.4}
+.chat-msg.user .bubble{background:#1a73e8;color:#fff;border-bottom-right-radius:4px}
+.chat-msg.assistant .bubble{background:#e8e8e8;color:#333;border-bottom-left-radius:4px}
+.kb-list{list-style:none}
+.kb-list li{padding:.75rem 0;border-bottom:1px solid #f0f0f0}
+.kb-list li:last-child{border-bottom:none}
+.kb-list .kb-title{font-weight:600;color:#1a73e8;font-size:.9rem}
+.kb-list .kb-cat{font-size:.75rem;color:#888;margin-top:.25rem}
+.kb-list .kb-snippet{font-size:.8rem;color:#666;margin-top:.25rem}
+.search-bar{display:flex;gap:.5rem;margin-bottom:1rem}
+.search-bar input{flex:1}
+.empty-state{text-align:center;padding:2rem;color:#999;font-size:.9rem}
+.suggested-articles{margin-top:1rem}
+.suggested-articles h4{font-size:.9rem;color:#555;margin-bottom:.5rem}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>&#9878; TicketForge Portal</h1>
+  <span class="version">v{{APP_VERSION}}</span>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/docs">API Docs</a>
+  </nav>
+</div>
+
+<div class="api-bar">
+  <input type="password" id="apiKey" placeholder="Enter API key..." />
+  <span class="status" id="statusMsg"></span>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('submit')">Submit Ticket</div>
+    <div class="tab" onclick="switchTab('status')">Check Status</div>
+    <div class="tab" onclick="switchTab('kb')">Knowledge Base</div>
+    <div class="tab" onclick="switchTab('chat')">Chat Assistant</div>
+  </div>
+
+  <!-- Submit Ticket Tab -->
+  <div class="tab-content active" id="tab-submit">
+    <div class="card">
+      <h3>Submit a Support Ticket</h3>
+      <div class="form-group">
+        <label>Your Email</label>
+        <input type="email" id="ticketEmail" placeholder="your.email@company.com" />
+      </div>
+      <div class="form-group">
+        <label>Issue Title</label>
+        <input type="text" id="ticketTitle" placeholder="Brief description of your issue" />
+      </div>
+      <div class="form-group">
+        <label>Category (optional)</label>
+        <select id="ticketCategory">
+          <option value="">-- Select --</option>
+          <option value="Hardware">Hardware</option>
+          <option value="Software">Software</option>
+          <option value="Network">Network</option>
+          <option value="Access & Identity">Access & Identity</option>
+          <option value="Service Request">Service Request</option>
+          <option value="Security Incident">Security Incident</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="ticketDescription" placeholder="Provide details about your issue..."></textarea>
+      </div>
+      <button class="btn" onclick="submitTicket()">Submit Ticket</button>
+      <div id="submitResult"></div>
+    </div>
+  </div>
+
+  <!-- Check Status Tab -->
+  <div class="tab-content" id="tab-status">
+    <div class="card">
+      <h3>Check Ticket Status</h3>
+      <div class="search-bar">
+        <input type="text" id="statusTicketId" placeholder="Enter ticket ID (e.g. PORTAL-abc123)" />
+        <button class="btn" onclick="checkStatus()">Check</button>
+      </div>
+      <div id="statusResult"></div>
+    </div>
+  </div>
+
+  <!-- Knowledge Base Tab -->
+  <div class="tab-content" id="tab-kb">
+    <div class="card">
+      <h3>Knowledge Base</h3>
+      <div class="search-bar">
+        <input type="text" id="kbSearch" placeholder="Search for articles..." />
+        <button class="btn" onclick="searchKB()">Search</button>
+        <button class="btn btn-secondary" onclick="browseKB()">Browse All</button>
+      </div>
+      <div id="kbResults"><div class="empty-state">Search or browse knowledge base articles</div></div>
+    </div>
+  </div>
+
+  <!-- Chat Tab -->
+  <div class="tab-content" id="tab-chat">
+    <div class="card">
+      <h3>Chat with TicketForge Assistant</h3>
+      <div class="chat-container">
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg assistant"><div class="bubble">Hello! I'm the TicketForge assistant. I can help you create tickets, check status, or search the knowledge base. How can I help?</div></div>
+        </div>
+        <div class="chat-input">
+          <input type="text" id="chatInput" placeholder="Type your message..." onkeydown="if(event.key==='Enter')sendChat()" />
+          <button class="btn" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let chatSessionId = '';
+
+function hdr(){ return {"X-Api-Key":document.getElementById("apiKey").value,"Content-Type":"application/json"} }
+function setStatus(msg,ok){ const el=document.getElementById("statusMsg"); el.textContent=msg; el.style.color=ok?"#16a34a":"#c53030" }
+function esc(s){ const d=document.createElement("div"); d.textContent=s||""; return d.innerHTML; }
+
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+async function submitTicket(){
+  const key=document.getElementById("apiKey").value.trim();
+  if(!key){setStatus("Enter API key",false);return}
+  const title=document.getElementById("ticketTitle").value.trim();
+  const email=document.getElementById("ticketEmail").value.trim();
+  if(!title||!email){document.getElementById("submitResult").innerHTML='<div class="result-msg error">Title and email are required.</div>';return}
+  try{
+    const res=await fetch(API+"/portal/tickets",{method:"POST",headers:hdr(),body:JSON.stringify({
+      title:title,description:document.getElementById("ticketDescription").value,
+      reporter_email:email,category:document.getElementById("ticketCategory").value
+    })});
+    const d=await res.json();
+    if(res.ok){
+      let html='<div class="result-msg success">'+esc(d.message)+'</div>';
+      if(d.suggested_articles&&d.suggested_articles.length>0){
+        html+='<div class="suggested-articles"><h4>These articles may help:</h4><ul class="kb-list">';
+        d.suggested_articles.forEach(a=>{html+='<li><div class="kb-title">'+esc(a.title)+'</div><div class="kb-snippet">'+esc(a.snippet)+'</div></li>'});
+        html+='</ul></div>';
+      }
+      document.getElementById("submitResult").innerHTML=html;
+    }else{
+      document.getElementById("submitResult").innerHTML='<div class="result-msg error">Error: '+esc(d.detail||"Unknown error")+'</div>';
+    }
+  }catch(e){document.getElementById("submitResult").innerHTML='<div class="result-msg error">'+esc(e.message)+'</div>'}
+}
+
+async function checkStatus(){
+  const key=document.getElementById("apiKey").value.trim();
+  if(!key){setStatus("Enter API key",false);return}
+  const ticketId=document.getElementById("statusTicketId").value.trim();
+  if(!ticketId){document.getElementById("statusResult").innerHTML='<div class="result-msg error">Enter a ticket ID</div>';return}
+  try{
+    const res=await fetch(API+"/tickets/"+encodeURIComponent(ticketId),{headers:hdr()});
+    if(res.ok){
+      const d=await res.json();
+      document.getElementById("statusResult").innerHTML='<div class="result-msg success">'
+        +'<strong>Ticket:</strong> '+esc(d.ticket_id)+'<br>'
+        +'<strong>Status:</strong> '+esc(d.ticket_status)+'<br>'
+        +'<strong>Priority:</strong> '+esc(d.priority?.priority||"")+'<br>'
+        +'<strong>Category:</strong> '+esc(d.category?.category||"")+'<br>'
+        +'<strong>Summary:</strong> '+esc(d.summary)+'</div>';
+    }else{
+      const d=await res.json();
+      document.getElementById("statusResult").innerHTML='<div class="result-msg error">'+esc(d.detail||"Not found")+'</div>';
+    }
+  }catch(e){document.getElementById("statusResult").innerHTML='<div class="result-msg error">'+esc(e.message)+'</div>'}
+}
+
+async function searchKB(){
+  const key=document.getElementById("apiKey").value.trim();
+  if(!key){setStatus("Enter API key",false);return}
+  const query=document.getElementById("kbSearch").value.trim();
+  if(!query){return}
+  try{
+    const res=await fetch(API+"/kb/search",{method:"POST",headers:hdr(),body:JSON.stringify({query:query,max_results:10})});
+    const d=await res.json();
+    if(d.results&&d.results.length>0){
+      let html='<ul class="kb-list">';
+      d.results.forEach(r=>{html+='<li><div class="kb-title">'+esc(r.title)+'</div><div class="kb-cat">'+esc(r.category)+' &middot; Score: '+(r.relevance_score*100).toFixed(0)+'%</div><div class="kb-snippet">'+esc(r.snippet)+'</div></li>'});
+      html+='</ul>';
+      document.getElementById("kbResults").innerHTML=html;
+    }else{
+      document.getElementById("kbResults").innerHTML='<div class="empty-state">No matching articles found</div>';
+    }
+  }catch(e){document.getElementById("kbResults").innerHTML='<div class="empty-state">Search failed: '+esc(e.message)+'</div>'}
+}
+
+async function browseKB(){
+  const key=document.getElementById("apiKey").value.trim();
+  if(!key){setStatus("Enter API key",false);return}
+  try{
+    const res=await fetch(API+"/kb/articles",{headers:hdr()});
+    const d=await res.json();
+    if(d.data&&d.data.length>0){
+      let html='<ul class="kb-list">';
+      d.data.forEach(a=>{html+='<li><div class="kb-title">'+esc(a.title)+'</div><div class="kb-cat">'+esc(a.category)+' &middot; '+a.tags.map(t=>esc(t)).join(', ')+'</div><div class="kb-snippet">'+esc((a.content||"").substring(0,200))+'</div></li>'});
+      html+='</ul>';
+      document.getElementById("kbResults").innerHTML=html;
+    }else{
+      document.getElementById("kbResults").innerHTML='<div class="empty-state">No articles in the knowledge base yet</div>';
+    }
+  }catch(e){document.getElementById("kbResults").innerHTML='<div class="empty-state">Failed to load: '+esc(e.message)+'</div>'}
+}
+
+async function sendChat(){
+  const key=document.getElementById("apiKey").value.trim();
+  if(!key){setStatus("Enter API key",false);return}
+  const input=document.getElementById("chatInput");
+  const msg=input.value.trim();
+  if(!msg)return;
+  input.value='';
+  const el=document.getElementById("chatMessages");
+  el.innerHTML+='<div class="chat-msg user"><div class="bubble">'+esc(msg)+'</div></div>';
+  el.scrollTop=el.scrollHeight;
+  try{
+    const res=await fetch(API+"/chat",{method:"POST",headers:hdr(),body:JSON.stringify({session_id:chatSessionId,message:msg})});
+    const d=await res.json();
+    if(res.ok){
+      chatSessionId=d.session_id||chatSessionId;
+      el.innerHTML+='<div class="chat-msg assistant"><div class="bubble">'+esc(d.reply).replace(/\\n/g,'<br>')+'</div></div>';
+    }else{
+      el.innerHTML+='<div class="chat-msg assistant"><div class="bubble" style="background:#fde8e8;color:#c53030">Error: '+esc(d.detail||"Unknown error")+'</div></div>';
+    }
+  }catch(e){
+    el.innerHTML+='<div class="chat-msg assistant"><div class="bubble" style="background:#fde8e8;color:#c53030">'+esc(e.message)+'</div></div>';
+  }
+  el.scrollTop=el.scrollHeight;
+}
 </script>
 </body>
 </html>
