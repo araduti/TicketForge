@@ -1355,3 +1355,173 @@ class VolumeForecastResponse(BaseModel):
     category_forecasts: list[CategoryForecast] = Field(default_factory=list)
     forecast_points: list[VolumeForecastPoint] = Field(default_factory=list)
 
+
+# ── Phase 10b: Custom classifiers ────────────────────────────────────────────
+
+
+class CustomClassifierCreate(BaseModel):
+    """POST /custom-classifiers — create a custom classifier."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Classifier name")
+    description: str = Field(default="", description="Optional description")
+    categories: list[str] = Field(..., min_length=2, description="Classification categories (at least 2)")
+
+
+class CustomClassifierRecord(BaseModel):
+    """Stored custom classifier record."""
+
+    id: str = Field(..., description="Unique classifier ID")
+    name: str
+    description: str = ""
+    categories: list[str] = Field(default_factory=list)
+    training_samples: int = 0
+    accuracy: float = 0.0
+    status: str = "untrained"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class CustomClassifierResponse(BaseModel):
+    success: bool = True
+    classifier: CustomClassifierRecord
+
+
+class CustomClassifierListResponse(BaseModel):
+    success: bool = True
+    classifiers: list[CustomClassifierRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class TrainingSample(BaseModel):
+    """A single training sample for a custom classifier."""
+
+    text: str = Field(..., min_length=1, description="Sample text")
+    category: str = Field(..., min_length=1, description="Category label")
+
+
+class TrainClassifierRequest(BaseModel):
+    """POST /custom-classifiers/{id}/train — submit training samples."""
+
+    samples: list[TrainingSample] = Field(..., min_length=1, description="Training samples (at least 1)")
+
+
+class TrainClassifierResponse(BaseModel):
+    success: bool = True
+    classifier_id: str = ""
+    samples_added: int = 0
+    total_samples: int = 0
+    status: str = "untrained"
+
+
+class ClassifyRequest(BaseModel):
+    """POST /custom-classifiers/{id}/classify — classify text."""
+
+    text: str = Field(..., min_length=1, description="Text to classify")
+
+
+class ClassifyResponse(BaseModel):
+    success: bool = True
+    classifier_id: str = ""
+    text: str = ""
+    predicted_category: str = ""
+    confidence: float = 0.0
+    all_scores: dict[str, float] = Field(default_factory=dict)
+
+
+# ── Phase 10b: Anomaly detection ─────────────────────────────────────────────
+
+
+class AnomalyRuleCreate(BaseModel):
+    """POST /anomaly-rules — create an anomaly detection rule."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Rule name")
+    metric: str = Field(..., description="Metric to monitor: volume, category_shift, priority_spike, resolution_time")
+    threshold: float = Field(..., ge=0, description="Anomaly threshold")
+    window_hours: int = Field(default=24, ge=1, le=720, description="Analysis window in hours")
+    enabled: bool = Field(default=True, description="Whether the rule is active")
+
+
+class AnomalyRuleRecord(BaseModel):
+    """Stored anomaly rule record."""
+
+    id: str = Field(..., description="Unique rule ID")
+    name: str
+    metric: str
+    threshold: float
+    window_hours: int = 24
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class AnomalyRuleResponse(BaseModel):
+    success: bool = True
+    rule: AnomalyRuleRecord
+
+
+class AnomalyRuleListResponse(BaseModel):
+    success: bool = True
+    rules: list[AnomalyRuleRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class DetectedAnomaly(BaseModel):
+    """A single detected anomaly."""
+
+    anomaly_type: str = ""
+    severity: str = "low"
+    metric_value: float = 0.0
+    threshold: float = 0.0
+    description: str = ""
+    detected_at: str = ""
+    window_hours: int = 24
+
+
+class AnomalyDetectionResponse(BaseModel):
+    success: bool = True
+    anomalies: list[DetectedAnomaly] = Field(default_factory=list)
+    total_anomalies: int = 0
+    analysis_window_hours: int = 24
+
+
+# ── Phase 10b: KB auto-generation ────────────────────────────────────────────
+
+
+class KBAutoGenerateRequest(BaseModel):
+    """POST /kb/auto-generate — generate KB articles from resolved tickets."""
+
+    category: str | None = Field(default=None, description="Optional category filter")
+    min_resolved_tickets: int = Field(default=3, ge=1, description="Minimum resolved tickets per category")
+    max_articles: int = Field(default=5, ge=1, le=20, description="Maximum articles to generate")
+
+
+class GeneratedKBArticle(BaseModel):
+    """A generated KB article."""
+
+    title: str = ""
+    content: str = ""
+    category: str = ""
+    source_ticket_count: int = 0
+    confidence: float = 0.0
+    tags: list[str] = Field(default_factory=list)
+
+
+class KBAutoGenerateResponse(BaseModel):
+    success: bool = True
+    articles: list[GeneratedKBArticle] = Field(default_factory=list)
+    total_generated: int = 0
+
+
+class KBSuggestion(BaseModel):
+    """A suggestion for KB article auto-generation."""
+
+    category: str = ""
+    resolved_ticket_count: int = 0
+    existing_article_count: int = 0
+    suggestion_score: float = 0.0
+    suggested_title: str = ""
+
+
+class KBAutoGenerateSuggestionsResponse(BaseModel):
+    success: bool = True
+    suggestions: list[KBSuggestion] = Field(default_factory=list)
+    total_suggestions: int = 0
+
