@@ -3375,6 +3375,7 @@ async def bulk_add_tags(
 
     for ticket_id in body.ticket_ids:
         added_count = 0
+        skipped_count = 0
         for tag in body.tags:
             normalised = tag.strip().lower()
             if not normalised:
@@ -3386,12 +3387,15 @@ async def bulk_add_tags(
                 )
                 added_count += 1
             except _sqlite3.IntegrityError:
-                pass
+                skipped_count += 1
 
+        detail = f"Added {added_count} tag(s)"
+        if skipped_count:
+            detail += f", {skipped_count} skipped (duplicate)"
         results.append(BulkOperationResult(
             ticket_id=ticket_id,
             success=True,
-            detail=f"Added {added_count} tag(s)",
+            detail=detail,
         ))
         succeeded += 1
 
