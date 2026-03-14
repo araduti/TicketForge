@@ -217,6 +217,28 @@ class Settings(BaseSettings):
         description="Drift score threshold (0.0-1.0) above which a field is flagged as drifting",
     )
 
+    # ── CSAT surveys ─────────────────────────────────────────────────────────
+    csat_enabled: bool = Field(
+        default=True,
+        description="Enable CSAT (Customer Satisfaction) survey endpoints",
+    )
+
+    # ── WebSocket notifications ───────────────────────────────────────────────
+    websocket_notifications_enabled: bool = Field(
+        default=True,
+        description="Enable the /ws/notifications WebSocket endpoint for real-time events",
+    )
+
+    # ── Internationalisation (i18n) ───────────────────────────────────────────
+    i18n_enabled: bool = Field(
+        default=True,
+        description="Enable multi-language prompt templates and localised responses",
+    )
+    i18n_default_language: str = Field(
+        default="en",
+        description="Default language (ISO 639-1) when no language is detected",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")

@@ -119,3 +119,71 @@ Pattern summary:
 - Frequency per week: {frequency_per_week:.1f}
 - Common keywords: {keywords}
 """
+
+
+# ── Internationalisation (i18n) prompt additions ─────────────────────────────
+
+I18N_LANGUAGE_INSTRUCTION = """\
+
+IMPORTANT: The ticket is written in {language_name} (ISO code: {language_code}).
+Respond with ALL text fields in {language_name}. This includes the summary,
+priority_rationale, routing_rationale, sentiment_rationale, kb_articles titles,
+and root_cause_hypothesis. Keep JSON keys in English."""
+
+I18N_RESPONSE_LANGUAGE_INSTRUCTION = """\
+
+IMPORTANT: The user's ticket is in {language_name} (ISO code: {language_code}).
+Write the response body in {language_name}. The subject line should also be in
+{language_name}. Keep JSON keys in English."""
+
+# Language code → human-readable name (common IT-support languages)
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "nl": "Dutch",
+    "ja": "Japanese",
+    "zh": "Chinese",
+    "ko": "Korean",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "sv": "Swedish",
+    "pl": "Polish",
+    "da": "Danish",
+    "fi": "Finnish",
+    "nb": "Norwegian",
+    "tr": "Turkish",
+    "cs": "Czech",
+    "ro": "Romanian",
+    "uk": "Ukrainian",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "id": "Indonesian",
+    "ms": "Malay",
+    "he": "Hebrew",
+}
+
+
+def get_language_name(code: str) -> str:
+    """Return the human-readable name for an ISO 639-1 language code."""
+    return LANGUAGE_NAMES.get(code.lower(), code.upper())
+
+
+def get_i18n_analysis_prompt(language_code: str) -> str:
+    """Return the language instruction to append to the analysis prompt, or empty string for English."""
+    if language_code.lower() == "en":
+        return ""
+    name = get_language_name(language_code)
+    return I18N_LANGUAGE_INSTRUCTION.format(language_name=name, language_code=language_code)
+
+
+def get_i18n_response_prompt(language_code: str) -> str:
+    """Return the language instruction to append to the response-suggestion prompt, or empty string for English."""
+    if language_code.lower() == "en":
+        return ""
+    name = get_language_name(language_code)
+    return I18N_RESPONSE_LANGUAGE_INSTRUCTION.format(language_name=name, language_code=language_code)

@@ -505,3 +505,58 @@ class PortalTicketResponse(BaseModel):
     ticket_id: str = Field(..., description="Assigned ticket ID")
     message: str = Field(default="Your ticket has been submitted successfully.", description="Confirmation message")
     suggested_articles: list[KBSearchResult] = Field(default_factory=list, description="Relevant KB articles that may help")
+
+
+# ── CSAT (Customer Satisfaction) models ──────────────────────────────────────
+
+class CSATSubmission(BaseModel):
+    """POST /tickets/{ticket_id}/csat — submit a customer satisfaction rating."""
+
+    rating: int = Field(..., ge=1, le=5, description="Satisfaction rating 1 (very dissatisfied) to 5 (very satisfied)")
+    comment: str = Field(default="", max_length=2000, description="Optional free-text feedback")
+    reporter_email: str = Field(default="", description="Email of the person submitting the rating")
+
+
+class CSATRecord(BaseModel):
+    """A stored CSAT rating record."""
+
+    id: int = Field(..., description="Unique rating record ID")
+    ticket_id: str = Field(..., description="Ticket this rating belongs to")
+    rating: int = Field(ge=1, le=5, description="Satisfaction rating 1-5")
+    comment: str = Field(default="")
+    reporter_email: str = Field(default="")
+    submitted_at: datetime = Field(default_factory=_utcnow)
+
+
+class CSATResponse(BaseModel):
+    """Response for a single CSAT rating lookup."""
+
+    success: bool = True
+    data: CSATRecord | None = Field(default=None, description="CSAT rating record, or null if none submitted")
+
+
+class CSATAnalyticsResponse(BaseModel):
+    """GET /analytics/csat — aggregate CSAT statistics."""
+
+    success: bool = True
+    total_ratings: int = Field(default=0, description="Total number of CSAT ratings collected")
+    average_rating: float = Field(default=0.0, description="Mean satisfaction score (1.0-5.0)")
+    rating_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of ratings per score level (1-5)",
+    )
+    recent_comments: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Most recent feedback comments with ticket IDs",
+    )
+
+
+# ── WebSocket notification models ────────────────────────────────────────────
+
+class WebSocketEvent(BaseModel):
+    """Real-time event broadcast via WebSocket."""
+
+    event_type: str = Field(..., description="Event type: ticket_created, status_changed, sla_breach")
+    ticket_id: str = Field(default="", description="Related ticket ID")
+    data: dict[str, Any] = Field(default_factory=dict, description="Event-specific payload")
+    timestamp: datetime = Field(default_factory=_utcnow)

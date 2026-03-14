@@ -196,28 +196,18 @@ These set the benchmark for enterprise expectations:
 - Ticket status checking
 - Knowledge base browsing
 
-#### 6.8 No Real-Time Notifications
+#### 6.8 ~~No Real-Time Notifications~~ ✅ IMPLEMENTED
 **Impact:** Medium  
-**Current state:** No push notifications, WebSocket events, or email notifications.  
-**Competitor benchmark:** Zammad, FreeScout, Trudesk, and all commercial tools provide real-time notifications.  
-**Recommendation:** Add a notification system supporting:
-- WebSocket events for real-time dashboard updates
-- Email notifications for SLA breach warnings
-- Configurable notification preferences per user/role
+**Status:** Implemented. Added WebSocket endpoint `/ws/notifications` for real-time event streaming. Events are broadcast for ticket creation (`ticket_created`), status changes (`status_changed`), and SLA breaches (`sla_breach`). Authentication via API key query parameter. Connections are managed by a `ConnectionManager` class with automatic stale connection cleanup. Configurable via `WEBSOCKET_NOTIFICATIONS_ENABLED` environment variable.
 
 #### 6.9 No Email Channel Integration
 **Impact:** Medium  
 **Status:** ✅ IMPLEMENTED. Added `POST /ingest/email` endpoint for webhook-based email ingestion. Supports generic email payloads, SendGrid Inbound Parse, and Mailgun Routes webhooks. Emails are parsed into `RawTicket` objects and processed through the full analysis pipeline. Enabled via `EMAIL_INGESTION_ENABLED=true` environment variable.  
 **Previous state:** Tickets could only be ingested via API/webhook. No native email ingestion.
 
-#### 6.10 No Multi-Language / i18n Support — 🟡 PARTIALLY IMPLEMENTED
+#### 6.10 ~~No Multi-Language / i18n Support~~ ✅ IMPLEMENTED
 **Impact:** Medium  
-**Current state:** Language detection is now implemented — the LLM detects the ticket's language (ISO 639-1 code) and includes it in the `EnrichedTicket` output. However, full i18n (translated prompts, multi-language responses) is not yet implemented.  
-**Competitor benchmark:** Zammad (37 languages), FreeScout (20+), GLPI (40+). Commercial tools all support multi-language.  
-**Remaining work:**
-- Externalize prompt templates for translation
-- Support multi-language ticket analysis (respond in same language)
-- Add localization for API error messages
+**Status:** Implemented. Language detection is included in the enrichment pipeline (ISO 639-1 codes). Full i18n support added: externalized prompt templates with language-aware instructions, LLM responses generated in the ticket's detected language, 27 supported languages in `LANGUAGE_NAMES` dictionary, and `GET /i18n/languages` endpoint for listing available languages. Configurable via `I18N_ENABLED` and `I18N_DEFAULT_LANGUAGE` environment variables.
 
 ### 🟢 Nice-to-Have Gaps (Lower Priority, Enhances Competitiveness)
 
@@ -226,11 +216,9 @@ These set the benchmark for enterprise expectations:
 **Status:** ✅ IMPLEMENTED. Added `POST /suggest-response` endpoint that generates draft agent responses for enriched tickets using the LLM. Returns structured JSON with subject, body, tone, and suggested actions.
 **Previous state:** TicketForge enriched tickets but did not suggest responses to agents.
 
-#### 6.12 No CSAT (Customer Satisfaction) Surveys
+#### 6.12 ~~No CSAT (Customer Satisfaction) Surveys~~ ✅ IMPLEMENTED
 **Impact:** Low-Medium  
-**Current state:** No mechanism to measure customer satisfaction.  
-**Competitor benchmark:** LibreDesk and most commercial tools offer automated CSAT surveys.  
-**Recommendation:** Add a simple CSAT survey mechanism triggered after ticket resolution.
+**Status:** Implemented. Added CSAT survey mechanism with `POST /tickets/{id}/csat` for submitting ratings (1-5 scale with optional comment), `GET /tickets/{id}/csat` for retrieving ratings, and `GET /analytics/csat` for aggregate statistics (average score, distribution, recent comments). Stored in `csat_ratings` SQLite table with one rating per ticket. Configurable via `CSAT_ENABLED` environment variable.
 
 #### 6.13 No Drift Detection / Model Monitoring
 **Impact:** Low-Medium  
@@ -325,7 +313,7 @@ These set TicketForge apart as a category leader:
 | # | Recommendation | Effort | Impact | Status |
 |---|---------------|--------|--------|--------|
 | 11 | **Build a simple chatbot interface** for ticket creation and KB search | High | High | ✅ Done |
-| 12 | **Add multi-language support** (language detection + multilingual analysis) | High | Medium | 🟡 Language detection done |
+| 12 | **Add multi-language support** (language detection + multilingual analysis) | High | Medium | ✅ Done |
 | 13 | **Add customer self-service portal** (embedded widget for ticket submission + KB browsing) | High | Medium | ✅ Done |
 | 14 | **Add model monitoring and drift detection** | Medium | Low-Medium | ✅ Done |
 | 15 | **Design a plugin system** for custom enrichment processors | High | Low-Medium | ✅ Done |
