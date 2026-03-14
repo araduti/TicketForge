@@ -28,6 +28,10 @@ Analyse the following IT support ticket and return a JSON object with this exact
   "recommended_queue": "<name of the queue or tier, e.g. 'L1 Service Desk', 'Network Ops', 'Security'>",
   "recommended_team": "<specific team, e.g. 'Windows Desktop Support', 'Cloud Infrastructure'>",
   "routing_rationale": "<one-sentence explanation>",
+  "sentiment": "<one of: positive | neutral | negative | frustrated>",
+  "sentiment_confidence": <float 0.0–1.0>,
+  "sentiment_rationale": "<one-sentence explanation of why this sentiment was detected>",
+  "detected_language": "<ISO 639-1 two-letter language code, e.g. 'en', 'es', 'fr', 'de', 'ja'>",
   "kb_articles": [
     {{"title": "<article title>", "url": "", "relevance_score": <float 0.0–1.0>}}
   ],
@@ -36,6 +40,11 @@ Analyse the following IT support ticket and return a JSON object with this exact
 }}
 
 Return at most 3 KB article suggestions. Leave url as empty string "".
+For sentiment, consider the user's tone, urgency, and frustration level:
+- "positive": User is appreciative or satisfied
+- "neutral": Standard professional request
+- "negative": User is unhappy or dissatisfied
+- "frustrated": User is visibly frustrated, angry, or has escalated the issue
 
 TICKET:
 ID: {ticket_id}

@@ -58,11 +58,16 @@ from models import (
     Role,
     RootCauseHypothesis,
     RoutingResult,
+    Sentiment,
+    SentimentResult,
     SLAInfo,
     SLAStatus,
     TicketSource,
+    TicketStatus,
+    TicketStatusUpdate,
     WebhookIngest,
 )
+from notifications import send_notifications
 from ticket_processor import TicketProcessor
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -99,7 +104,10 @@ CREATE TABLE IF NOT EXISTS processed_tickets (
     category TEXT,
     priority TEXT,
     automation_score INTEGER,
-    summary TEXT
+    summary TEXT,
+    sentiment TEXT DEFAULT 'neutral',
+    detected_language TEXT DEFAULT 'en',
+    ticket_status TEXT DEFAULT 'open'
 );
 
 CREATE TABLE IF NOT EXISTS ticket_history (
@@ -292,6 +300,10 @@ async def analyse_ticket(
     )
     enriched.sla = compute_sla(enriched.priority.priority, body.ticket.created_at)
     await _persist_ticket(enriched)
+
+    # Fire-and-forget notifications if priority/SLA warrants it
+    asyncio.create_task(send_notifications(enriched, settings))
+
     if _db:
         await audit.record(
             _db,
@@ -329,6 +341,9 @@ async def ingest_webhook(
     if settings.outbound_webhook_url:
         asyncio.create_task(_send_outbound_webhook(enriched))
 
+    # Fire-and-forget Slack/Teams notifications
+    asyncio.create_task(send_notifications(enriched, settings))
+
     if _db:
         await audit.record(
             _db,
@@ -353,7 +368,8 @@ async def get_cached_ticket(
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not ready")
     async with _db.execute(
-        "SELECT id, source, processed_at, category, priority, automation_score, summary "
+        "SELECT id, source, processed_at, category, priority, automation_score, summary, "
+        "sentiment, detected_language, ticket_status "
         "FROM processed_tickets WHERE id = ?",
         (ticket_id,),
     ) as cursor:
@@ -378,6 +394,11 @@ async def get_cached_ticket(
             resource=ticket_id,
         )
     # Return a minimal EnrichedTicket reconstructed from the cache
+    # Safely handle missing columns for DBs created before migration
+    sentiment_val = row[7] if len(row) > 7 else "neutral"
+    language_val = row[8] if len(row) > 8 else "en"
+    status_val = row[9] if len(row) > 9 else "open"
+
     return EnrichedTicket(
         ticket_id=row[0],
         source=TicketSource(row[1]),
@@ -389,8 +410,57 @@ async def get_cached_ticket(
             score=row[5] or 0, suggestion_type=AutomationSuggestionType.none
         ),
         root_cause=RootCauseHypothesis(),
+        sentiment=SentimentResult(
+            sentiment=Sentiment(sentiment_val or "neutral"),
+        ),
+        detected_language=language_val or "en",
+        ticket_status=TicketStatus(status_val or "open"),
         processed_at=datetime.fromisoformat(row[2]),
     )
+
+
+# ── Ticket status update endpoint ────────────────────────────────────────────
+
+@app.patch(
+    "/tickets/{ticket_id}/status",
+    tags=["core"],
+)
+async def update_ticket_status(
+    ticket_id: str,
+    body: TicketStatusUpdate,
+    api_key: str = Depends(require_analyst),
+):
+    """
+    Update the lifecycle status of a previously processed ticket.
+    Requires analyst or admin role.
+    """
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id FROM processed_tickets WHERE id = ?", (ticket_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ticket not found in cache")
+
+    await _db.execute(
+        "UPDATE processed_tickets SET ticket_status = ? WHERE id = ?",
+        (body.status.value, ticket_id),
+    )
+    await _db.commit()
+
+    if _db:
+        await audit.record(
+            _db,
+            api_key=api_key,
+            role=_resolve_role(api_key),
+            action="update_ticket_status",
+            resource=ticket_id,
+            detail=f"status={body.status.value}",
+        )
+    return {"success": True, "ticket_id": ticket_id, "status": body.status.value}
 
 
 # ── Bulk analysis endpoint ────────────────────────────────────────────────────
@@ -546,7 +616,7 @@ async def export_tickets(
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not ready")
 
-    base = "SELECT id, source, processed_at, category, priority, automation_score, summary FROM processed_tickets"
+    base = "SELECT id, source, processed_at, category, priority, automation_score, summary, sentiment, detected_language, ticket_status FROM processed_tickets"
     conditions: list[str] = []
     params: list = []
 
@@ -577,7 +647,7 @@ async def export_tickets(
     if format == ExportFormat.csv:
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["id", "source", "processed_at", "category", "priority", "automation_score", "summary"])
+        writer.writerow(["id", "source", "processed_at", "category", "priority", "automation_score", "summary", "sentiment", "detected_language", "ticket_status"])
         for row in rows:
             writer.writerow(row)
         return StreamingResponse(
@@ -596,6 +666,9 @@ async def export_tickets(
             "priority": r[4],
             "automation_score": r[5],
             "summary": r[6],
+            "sentiment": r[7] if len(r) > 7 else "neutral",
+            "detected_language": r[8] if len(r) > 8 else "en",
+            "ticket_status": r[9] if len(r) > 9 else "open",
         }
         for r in rows
     ]
@@ -633,8 +706,9 @@ async def _persist_ticket(enriched: EnrichedTicket) -> None:
         await _db.execute(
             """
             INSERT OR REPLACE INTO processed_tickets
-                (id, source, processed_at, category, priority, automation_score, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, source, processed_at, category, priority, automation_score, summary,
+                 sentiment, detected_language, ticket_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 enriched.ticket_id,
@@ -644,6 +718,9 @@ async def _persist_ticket(enriched: EnrichedTicket) -> None:
                 enriched.priority.priority.value,
                 enriched.automation.score,
                 enriched.summary,
+                enriched.sentiment.sentiment.value,
+                enriched.detected_language,
+                enriched.ticket_status.value,
             ),
         )
         await _db.commit()
