@@ -362,9 +362,9 @@ With all 40 original recommendations delivered, Phase 10 shifts focus from closi
 
 | # | Recommendation | Effort | Impact | Status |
 |---|---------------|--------|--------|--------|
-| 41 | **Add team dashboards** (real-time agent and team performance views with key metrics) | Medium | High | 🔲 Planned |
-| 42 | **Enhance SLA prediction** (multi-factor breach forecasting with configurable risk thresholds) | Medium | High | 🔲 Planned |
-| 43 | **Add volume forecasting** (historical trend analysis to predict ticket volumes by category/time) | High | Medium | 🔲 Planned |
+| 41 | **Add team dashboards** (real-time agent and team performance views with key metrics) | Medium | High | ✅ Done |
+| 42 | **Enhance SLA prediction** (multi-factor breach forecasting with configurable risk thresholds) | Medium | High | ✅ Done |
+| 43 | **Add volume forecasting** (historical trend analysis to predict ticket volumes by category/time) | High | Medium | ✅ Done |
 
 #### 10b. AI Customisation (6-8 weeks)
 

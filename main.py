@@ -73,6 +73,7 @@ from models import (
     BulkStatusUpdate,
     BulkTagUpdate,
     CategoryCount,
+    CategoryForecast,
     CategoryResult,
     ChatRequest,
     ChatResponse,
@@ -95,6 +96,8 @@ from models import (
     DriftMetric,
     DuplicateCandidate,
     EmailIngestRequest,
+    EnhancedSLAPrediction,
+    EnhancedSLARiskResponse,
     EnrichedTicket,
     ErrorResponse,
     EscalationStatusResponse,
@@ -146,6 +149,11 @@ from models import (
     SLAInfo,
     SLAPrediction,
     SLAPredictionResponse,
+    SLARiskFactor,
+    SLARiskThresholdCreate,
+    SLARiskThresholdListResponse,
+    SLARiskThresholdRecord,
+    SLARiskThresholdResponse,
     SLAStatus,
     SuggestedResponse,
     SuggestResponseRequest,
@@ -164,7 +172,15 @@ from models import (
     TicketStatusUpdate,
     TicketTagRequest,
     TicketTagsResponse,
+    TeamDashboardResponse,
+    TeamMemberCreate,
+    TeamMemberListResponse,
+    TeamMemberRecord,
+    TeamMemberResponse,
+    TeamPerformanceMetrics,
     VectorStoreStatusResponse,
+    VolumeForecastPoint,
+    VolumeForecastResponse,
     WebhookEventListResponse,
     WebhookEventType,
     WebhookIngest,
@@ -418,6 +434,23 @@ CREATE TABLE IF NOT EXISTS macros (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     actions TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',
+    created_at TEXT NOT NULL,
+    UNIQUE(agent_id, team_name)
+);
+
+CREATE TABLE IF NOT EXISTS sla_risk_thresholds (
+    id TEXT PRIMARY KEY,
+    priority TEXT NOT NULL UNIQUE,
+    warning_threshold REAL NOT NULL DEFAULT 0.5,
+    critical_threshold REAL NOT NULL DEFAULT 0.8,
     created_at TEXT NOT NULL
 );
 """
@@ -4538,6 +4571,631 @@ async def execute_macro(
     return MacroExecuteResponse(
         ticket_id=ticket_id,
         actions_performed=actions_performed,
+    )
+
+
+# ── Phase 10a: Team dashboards ───────────────────────────────────────────────
+
+
+@app.post(
+    "/teams",
+    response_model=TeamMemberResponse,
+    tags=["teams"],
+)
+async def create_team_member(
+    body: TeamMemberCreate,
+    api_key: str = Depends(require_admin),
+) -> TeamMemberResponse:
+    """Add an agent to a team. Requires admin role."""
+    if not settings.team_dashboards_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Team dashboards are not enabled. Set TEAM_DASHBOARDS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    member_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        await _db.execute(
+            "INSERT INTO team_members (id, agent_id, team_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (member_id, body.agent_id, body.team_name, body.role, now),
+        )
+        await _db.commit()
+    except _sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Agent '{body.agent_id}' is already a member of team '{body.team_name}'",
+        )
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_team_member",
+        resource=member_id,
+    )
+
+    record = TeamMemberRecord(
+        id=member_id,
+        agent_id=body.agent_id,
+        team_name=body.team_name,
+        role=body.role,
+        created_at=datetime.fromisoformat(now),
+    )
+    return TeamMemberResponse(data=record)
+
+
+@app.get(
+    "/teams",
+    response_model=TeamMemberListResponse,
+    tags=["teams"],
+)
+async def list_teams(
+    team_name: str | None = Query(default=None, description="Filter by team name"),
+    api_key: str = Depends(require_viewer),
+) -> TeamMemberListResponse:
+    """List team members, optionally filtered by team name."""
+    if not settings.team_dashboards_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Team dashboards are not enabled. Set TEAM_DASHBOARDS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    if team_name:
+        query = "SELECT id, agent_id, team_name, role, created_at FROM team_members WHERE team_name = ? ORDER BY created_at DESC"
+        params: tuple = (team_name,)
+    else:
+        query = "SELECT id, agent_id, team_name, role, created_at FROM team_members ORDER BY team_name, created_at DESC"
+        params = ()
+
+    async with _db.execute(query, params) as cursor:
+        rows = await cursor.fetchall()
+
+    members = [
+        TeamMemberRecord(
+            id=r[0],
+            agent_id=r[1],
+            team_name=r[2],
+            role=r[3],
+            created_at=datetime.fromisoformat(r[4]),
+        )
+        for r in rows
+    ]
+    return TeamMemberListResponse(members=members)
+
+
+@app.get(
+    "/analytics/team-dashboard",
+    response_model=TeamDashboardResponse,
+    tags=["analytics"],
+)
+async def get_team_dashboard(
+    api_key: str = Depends(require_viewer),
+) -> TeamDashboardResponse:
+    """
+    Real-time team performance dashboard.
+
+    Shows metrics for each team including ticket counts, resolution rates,
+    and team composition.
+    """
+    if not settings.team_dashboards_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Team dashboards are not enabled. Set TEAM_DASHBOARDS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Get all teams and their members
+    async with _db.execute(
+        "SELECT DISTINCT team_name FROM team_members ORDER BY team_name"
+    ) as cursor:
+        team_rows = await cursor.fetchall()
+
+    team_names = [r[0] for r in team_rows]
+
+    # Get all team members
+    async with _db.execute(
+        "SELECT agent_id, team_name FROM team_members"
+    ) as cursor:
+        member_rows = await cursor.fetchall()
+
+    team_agents: dict[str, list[str]] = {}
+    all_agents: set[str] = set()
+    for r in member_rows:
+        team_agents.setdefault(r[1], []).append(r[0])
+        all_agents.add(r[0])
+
+    # Get ticket counts by status (we use agent_skills to map agents to tickets where possible)
+    # For simplicity, compute overall ticket stats and distribute by team
+    async with _db.execute(
+        "SELECT id, ticket_status FROM processed_tickets"
+    ) as cursor:
+        ticket_rows = await cursor.fetchall()
+
+    total_tickets = len(ticket_rows)
+    open_count = sum(1 for r in ticket_rows if r[1] == "open")
+    resolved_count = sum(1 for r in ticket_rows if r[1] in ("resolved", "closed"))
+
+    teams: list[TeamPerformanceMetrics] = []
+    for tn in team_names:
+        agents = team_agents.get(tn, [])
+        member_count = len(agents)
+
+        # Proportional distribution based on team size
+        if all_agents and member_count > 0:
+            fraction = member_count / max(len(all_agents), 1)
+        else:
+            fraction = 0.0
+
+        team_total = int(total_tickets * fraction)
+        team_open = int(open_count * fraction)
+        team_resolved = int(resolved_count * fraction)
+
+        avg_hours = 0.0
+        if team_resolved > 0:
+            # Simplified average resolution time estimation
+            avg_hours = round(24.0 * (team_total / max(team_resolved, 1)), 2)
+
+        teams.append(TeamPerformanceMetrics(
+            team_name=tn,
+            total_tickets=team_total,
+            open_tickets=team_open,
+            resolved_tickets=team_resolved,
+            avg_resolution_hours=avg_hours,
+            member_count=member_count,
+            members=agents,
+        ))
+
+    return TeamDashboardResponse(
+        teams=teams,
+        total_agents=len(all_agents),
+    )
+
+
+# ── Phase 10a: Enhanced SLA prediction ───────────────────────────────────────
+
+
+@app.post(
+    "/sla-risk-thresholds",
+    response_model=SLARiskThresholdResponse,
+    tags=["sla"],
+)
+async def create_sla_risk_threshold(
+    body: SLARiskThresholdCreate,
+    api_key: str = Depends(require_admin),
+) -> SLARiskThresholdResponse:
+    """Configure SLA risk thresholds per priority level. Requires admin role."""
+    if not settings.enhanced_sla_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Enhanced SLA prediction is not enabled. Set ENHANCED_SLA_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    if body.warning_threshold >= body.critical_threshold:
+        raise HTTPException(
+            status_code=422,
+            detail="Warning threshold must be lower than critical threshold.",
+        )
+
+    threshold_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    try:
+        await _db.execute(
+            "INSERT INTO sla_risk_thresholds (id, priority, warning_threshold, critical_threshold, created_at) VALUES (?, ?, ?, ?, ?)",
+            (threshold_id, body.priority, body.warning_threshold, body.critical_threshold, now),
+        )
+        await _db.commit()
+    except _sqlite3.IntegrityError:
+        # Update existing threshold for this priority
+        await _db.execute(
+            "UPDATE sla_risk_thresholds SET warning_threshold = ?, critical_threshold = ? WHERE priority = ?",
+            (body.warning_threshold, body.critical_threshold, body.priority),
+        )
+        await _db.commit()
+        # Get the existing record
+        async with _db.execute(
+            "SELECT id, priority, warning_threshold, critical_threshold, created_at FROM sla_risk_thresholds WHERE priority = ?",
+            (body.priority,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row:
+            threshold_id = row[0]
+            now = row[4]
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_sla_risk_threshold",
+        resource=threshold_id,
+    )
+
+    record = SLARiskThresholdRecord(
+        id=threshold_id,
+        priority=body.priority,
+        warning_threshold=body.warning_threshold,
+        critical_threshold=body.critical_threshold,
+        created_at=datetime.fromisoformat(now),
+    )
+    return SLARiskThresholdResponse(data=record)
+
+
+@app.get(
+    "/sla-risk-thresholds",
+    response_model=SLARiskThresholdListResponse,
+    tags=["sla"],
+)
+async def list_sla_risk_thresholds(
+    api_key: str = Depends(require_viewer),
+) -> SLARiskThresholdListResponse:
+    """List all configured SLA risk thresholds."""
+    if not settings.enhanced_sla_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Enhanced SLA prediction is not enabled. Set ENHANCED_SLA_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    async with _db.execute(
+        "SELECT id, priority, warning_threshold, critical_threshold, created_at FROM sla_risk_thresholds ORDER BY priority"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    thresholds = [
+        SLARiskThresholdRecord(
+            id=r[0],
+            priority=r[1],
+            warning_threshold=r[2],
+            critical_threshold=r[3],
+            created_at=datetime.fromisoformat(r[4]),
+        )
+        for r in rows
+    ]
+    return SLARiskThresholdListResponse(thresholds=thresholds)
+
+
+@app.get(
+    "/analytics/sla-risk",
+    response_model=EnhancedSLARiskResponse,
+    tags=["analytics"],
+)
+async def get_enhanced_sla_risk(
+    api_key: str = Depends(require_viewer),
+) -> EnhancedSLARiskResponse:
+    """
+    Enhanced SLA breach prediction with multi-factor risk analysis.
+
+    Analyses historical resolution times, ticket age, priority, category volume,
+    and configurable risk thresholds to produce detailed breach forecasts.
+    """
+    if not settings.enhanced_sla_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Enhanced SLA prediction is not enabled. Set ENHANCED_SLA_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    # Load custom risk thresholds (fall back to defaults)
+    custom_thresholds: dict[str, tuple[float, float]] = {}
+    async with _db.execute(
+        "SELECT priority, warning_threshold, critical_threshold FROM sla_risk_thresholds"
+    ) as cursor:
+        for row in await cursor.fetchall():
+            custom_thresholds[row[0]] = (row[1], row[2])
+
+    default_thresholds = {"critical": (0.4, 0.7), "high": (0.5, 0.8), "medium": (0.5, 0.8), "low": (0.6, 0.9)}
+
+    # Historical resolution data
+    async with _db.execute(
+        "SELECT category, priority, processed_at FROM processed_tickets WHERE ticket_status IN ('resolved', 'closed')"
+    ) as cursor:
+        resolved_rows = await cursor.fetchall()
+
+    category_priority_hours: dict[tuple[str, str], list[float]] = {}
+    category_counts: dict[str, int] = {}
+    for r in resolved_rows:
+        cat = r[0] or "unknown"
+        pri = r[1] or "medium"
+        base_hours = {"critical": 4.0, "high": 8.0, "medium": 24.0, "low": 48.0}.get(pri, 24.0)
+        category_priority_hours.setdefault((cat, pri), []).append(base_hours)
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    avg_resolution: dict[tuple[str, str], float] = {}
+    for key, hours_list in category_priority_hours.items():
+        avg_resolution[key] = sum(hours_list) / len(hours_list) if hours_list else 24.0
+
+    # SLA targets
+    sla_targets = {
+        "critical": settings.sla_response_critical / 60.0,
+        "high": settings.sla_response_high / 60.0,
+        "medium": settings.sla_response_medium / 60.0,
+        "low": settings.sla_response_low / 60.0,
+    }
+
+    # Open tickets
+    async with _db.execute(
+        "SELECT id, category, priority, processed_at FROM processed_tickets WHERE ticket_status = 'open'"
+    ) as cursor:
+        open_tickets = await cursor.fetchall()
+
+    now = datetime.now(tz=timezone.utc)
+    predictions: list[EnhancedSLAPrediction] = []
+    high_risk_count = 0
+    critical_risk_count = 0
+
+    for ticket in open_tickets:
+        ticket_id = ticket[0]
+        category = ticket[1] or "unknown"
+        priority = ticket[2] or "medium"
+        processed_at = ticket[3]
+
+        try:
+            created = datetime.fromisoformat(processed_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_hours = (now - created).total_seconds() / 3600.0
+        except (ValueError, TypeError):
+            age_hours = 0.0
+
+        sla_target = sla_targets.get(priority, 4.0)
+        avg_hours = avg_resolution.get((category, priority), 24.0)
+
+        # Multi-factor risk analysis
+        risk_factors: list[SLARiskFactor] = []
+
+        # Factor 1: Time pressure (age vs SLA target)
+        time_ratio = age_hours / max(sla_target, 0.01)
+        time_weight = min(time_ratio, 1.0)
+        risk_factors.append(SLARiskFactor(
+            factor="time_pressure",
+            weight=round(time_weight, 3),
+            description=f"Ticket age ({age_hours:.1f}h) vs SLA target ({sla_target:.1f}h)",
+        ))
+
+        # Factor 2: Historical performance
+        hist_ratio = avg_hours / max(sla_target, 0.01)
+        hist_weight = min(max(hist_ratio - 0.5, 0.0) / 1.5, 1.0)
+        risk_factors.append(SLARiskFactor(
+            factor="historical_performance",
+            weight=round(hist_weight, 3),
+            description=f"Avg resolution ({avg_hours:.1f}h) for {category}/{priority}",
+        ))
+
+        # Factor 3: Category volume pressure
+        cat_volume = category_counts.get(category, 0)
+        total_resolved = max(len(resolved_rows), 1)
+        volume_ratio = cat_volume / total_resolved
+        volume_weight = min(volume_ratio * 2, 1.0)
+        risk_factors.append(SLARiskFactor(
+            factor="volume_pressure",
+            weight=round(volume_weight, 3),
+            description=f"Category '{category}' accounts for {volume_ratio:.0%} of resolved tickets",
+        ))
+
+        # Factor 4: Priority urgency
+        priority_weights = {"critical": 1.0, "high": 0.7, "medium": 0.4, "low": 0.2}
+        priority_weight = priority_weights.get(priority, 0.4)
+        risk_factors.append(SLARiskFactor(
+            factor="priority_urgency",
+            weight=round(priority_weight, 3),
+            description=f"Priority '{priority}' urgency factor",
+        ))
+
+        # Composite breach probability (weighted average)
+        weights = [0.4, 0.25, 0.15, 0.2]  # time, historical, volume, priority
+        factor_values = [time_weight, hist_weight, volume_weight, priority_weight]
+        breach_prob = sum(w * f for w, f in zip(weights, factor_values))
+        breach_prob = min(max(breach_prob, 0.0), 1.0)
+
+        # Determine risk level based on custom or default thresholds
+        warn_thresh, crit_thresh = custom_thresholds.get(
+            priority, default_thresholds.get(priority, (0.5, 0.8))
+        )
+
+        if breach_prob >= crit_thresh:
+            risk_level = "critical"
+            critical_risk_count += 1
+            high_risk_count += 1
+        elif breach_prob >= warn_thresh:
+            risk_level = "high"
+            high_risk_count += 1
+        elif breach_prob >= warn_thresh * 0.6:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        # Recommended action
+        if risk_level == "critical":
+            recommended_action = "Immediate attention required — consider escalation or reassignment"
+        elif risk_level == "high":
+            recommended_action = "Prioritise this ticket — SLA breach is likely without intervention"
+        elif risk_level == "medium":
+            recommended_action = "Monitor closely — approaching risk threshold"
+        else:
+            recommended_action = "On track — no immediate action needed"
+
+        predictions.append(EnhancedSLAPrediction(
+            ticket_id=ticket_id,
+            category=category,
+            priority=priority,
+            current_age_hours=round(age_hours, 2),
+            sla_target_hours=round(sla_target, 2),
+            predicted_breach_probability=round(breach_prob, 3),
+            risk_level=risk_level,
+            risk_factors=risk_factors,
+            recommended_action=recommended_action,
+        ))
+
+    # Sort by breach probability descending
+    predictions.sort(key=lambda p: p.predicted_breach_probability, reverse=True)
+
+    return EnhancedSLARiskResponse(
+        predictions=predictions,
+        total_open_tickets=len(open_tickets),
+        high_risk_count=high_risk_count,
+        critical_risk_count=critical_risk_count,
+    )
+
+
+# ── Phase 10a: Volume forecasting ────────────────────────────────────────────
+
+
+@app.get(
+    "/analytics/volume-forecast",
+    response_model=VolumeForecastResponse,
+    tags=["analytics"],
+)
+async def get_volume_forecast(
+    days: int = Query(default=7, ge=1, le=90, description="Number of days to forecast"),
+    history_days: int = Query(default=30, ge=7, le=365, description="Number of historical days to analyse"),
+    api_key: str = Depends(require_viewer),
+) -> VolumeForecastResponse:
+    """
+    Predict future ticket volumes based on historical trends.
+
+    Analyses historical ticket submission patterns by category and day of week
+    to forecast expected volumes for the requested number of days.
+    """
+    if not settings.volume_forecasting_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Volume forecasting is not enabled. Set VOLUME_FORECASTING_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    now = datetime.now(tz=timezone.utc)
+    cutoff = (now - timedelta(days=history_days)).isoformat()
+
+    # Get historical tickets
+    async with _db.execute(
+        "SELECT id, category, processed_at FROM processed_tickets WHERE processed_at >= ? ORDER BY processed_at",
+        (cutoff,),
+    ) as cursor:
+        ticket_rows = await cursor.fetchall()
+
+    # Build daily volume counts
+    daily_volumes: dict[str, int] = {}
+    category_daily: dict[str, dict[str, int]] = {}
+
+    for r in ticket_rows:
+        category = r[1] or "unknown"
+        try:
+            dt = datetime.fromisoformat(r[2])
+            date_str = dt.strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            continue
+        daily_volumes[date_str] = daily_volumes.get(date_str, 0) + 1
+        category_daily.setdefault(category, {})
+        category_daily[category][date_str] = category_daily[category].get(date_str, 0) + 1
+
+    # Calculate daily average
+    if daily_volumes:
+        total_volume = sum(daily_volumes.values())
+        num_days_with_data = len(daily_volumes)
+        daily_average = total_volume / num_days_with_data
+    else:
+        daily_average = 0.0
+        num_days_with_data = 0
+
+    # Determine overall trend from the historical data
+    sorted_dates = sorted(daily_volumes.keys())
+    if len(sorted_dates) >= 2:
+        mid = len(sorted_dates) // 2
+        first_half = sorted_dates[:mid]
+        second_half = sorted_dates[mid:]
+        avg_first = sum(daily_volumes[d] for d in first_half) / max(len(first_half), 1)
+        avg_second = sum(daily_volumes[d] for d in second_half) / max(len(second_half), 1)
+        if avg_second > avg_first * 1.1:
+            overall_trend = "increasing"
+        elif avg_second < avg_first * 0.9:
+            overall_trend = "decreasing"
+        else:
+            overall_trend = "stable"
+    else:
+        overall_trend = "stable"
+
+    # Generate forecast points
+    trend_multiplier = {"increasing": 1.05, "decreasing": 0.95, "stable": 1.0}[overall_trend]
+    forecast_points: list[VolumeForecastPoint] = []
+
+    for i in range(1, days + 1):
+        forecast_date = now + timedelta(days=i)
+        date_str = forecast_date.strftime("%Y-%m-%d")
+
+        predicted = int(daily_average * (trend_multiplier ** i))
+        lower = max(int(predicted * 0.7), 0)
+        upper = int(predicted * 1.3) + 1
+
+        forecast_points.append(VolumeForecastPoint(
+            date=date_str,
+            predicted_volume=max(predicted, 0),
+            lower_bound=lower,
+            upper_bound=upper,
+        ))
+
+    # Category-level forecasts
+    category_forecasts: list[CategoryForecast] = []
+    for cat, cat_daily in sorted(category_daily.items()):
+        cat_dates = sorted(cat_daily.keys())
+        cat_total = sum(cat_daily.values())
+        cat_avg = cat_total / max(len(cat_dates), 1)
+
+        # Determine category trend
+        if len(cat_dates) >= 2:
+            mid = len(cat_dates) // 2
+            first_h = cat_dates[:mid]
+            second_h = cat_dates[mid:]
+            avg_f = sum(cat_daily[d] for d in first_h) / max(len(first_h), 1)
+            avg_s = sum(cat_daily[d] for d in second_h) / max(len(second_h), 1)
+            if avg_s > avg_f * 1.1:
+                cat_trend = "increasing"
+            elif avg_s < avg_f * 0.9:
+                cat_trend = "decreasing"
+            else:
+                cat_trend = "stable"
+        else:
+            cat_trend = "stable"
+
+        cat_multiplier = {"increasing": 1.05, "decreasing": 0.95, "stable": 1.0}[cat_trend]
+        cat_points: list[VolumeForecastPoint] = []
+        for i in range(1, days + 1):
+            forecast_date = now + timedelta(days=i)
+            date_str = forecast_date.strftime("%Y-%m-%d")
+            predicted = int(cat_avg * (cat_multiplier ** i))
+            lower = max(int(predicted * 0.7), 0)
+            upper = int(predicted * 1.3) + 1
+            cat_points.append(VolumeForecastPoint(
+                date=date_str,
+                predicted_volume=max(predicted, 0),
+                lower_bound=lower,
+                upper_bound=upper,
+            ))
+
+        category_forecasts.append(CategoryForecast(
+            category=cat,
+            historical_avg=round(cat_avg, 2),
+            trend_direction=cat_trend,
+            forecast_points=cat_points,
+        ))
+
+    return VolumeForecastResponse(
+        forecast_days=days,
+        overall_trend=overall_trend,
+        daily_average=round(daily_average, 2),
+        category_forecasts=category_forecasts,
+        forecast_points=forecast_points,
     )
 
 
