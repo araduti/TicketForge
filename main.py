@@ -48,6 +48,11 @@ from models import (
     AnalyseRequest,
     AnalyseResponse,
     AnalyticsResponse,
+    AnomalyDetectionResponse,
+    AnomalyRuleCreate,
+    AnomalyRuleListResponse,
+    AnomalyRuleRecord,
+    AnomalyRuleResponse,
     ApprovalDecision,
     ApprovalListResponse,
     ApprovalRecord,
@@ -77,6 +82,8 @@ from models import (
     CategoryResult,
     ChatRequest,
     ChatResponse,
+    ClassifyRequest,
+    ClassifyResponse,
     ContactCreate,
     ContactListResponse,
     ContactRecord,
@@ -86,6 +93,10 @@ from models import (
     CSATRecord,
     CSATResponse,
     CSATSubmission,
+    CustomClassifierCreate,
+    CustomClassifierListResponse,
+    CustomClassifierRecord,
+    CustomClassifierResponse,
     CustomFieldDefinition,
     CustomFieldListResponse,
     CustomFieldRecord,
@@ -93,6 +104,7 @@ from models import (
     DailyTrend,
     DetectDuplicatesRequest,
     DetectDuplicatesResponse,
+    DetectedAnomaly,
     DriftMetric,
     DuplicateCandidate,
     EmailIngestRequest,
@@ -102,15 +114,20 @@ from models import (
     ErrorResponse,
     EscalationStatusResponse,
     ExportFormat,
+    GeneratedKBArticle,
     HealthResponse,
     KBArticleCreate,
     KBArticleListResponse,
     KBArticleRecord,
     KBArticleResponse,
     KBArticleUpdate,
+    KBAutoGenerateRequest,
+    KBAutoGenerateResponse,
+    KBAutoGenerateSuggestionsResponse,
     KBSearchRequest,
     KBSearchResponse,
     KBSearchResult,
+    KBSuggestion,
     MacroAction,
     MacroCreate,
     MacroExecuteResponse,
@@ -178,6 +195,9 @@ from models import (
     TeamMemberRecord,
     TeamMemberResponse,
     TeamPerformanceMetrics,
+    TrainClassifierRequest,
+    TrainClassifierResponse,
+    TrainingSample,
     VectorStoreStatusResponse,
     VolumeForecastPoint,
     VolumeForecastResponse,
@@ -451,6 +471,35 @@ CREATE TABLE IF NOT EXISTS sla_risk_thresholds (
     priority TEXT NOT NULL UNIQUE,
     warning_threshold REAL NOT NULL DEFAULT 0.5,
     critical_threshold REAL NOT NULL DEFAULT 0.8,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS custom_classifiers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    categories TEXT NOT NULL DEFAULT '[]',
+    training_samples INTEGER NOT NULL DEFAULT 0,
+    accuracy REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'untrained',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS classifier_training_data (
+    id TEXT PRIMARY KEY,
+    classifier_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS anomaly_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    window_hours INTEGER NOT NULL DEFAULT 24,
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
 """
@@ -5196,6 +5245,768 @@ async def get_volume_forecast(
         daily_average=round(daily_average, 2),
         category_forecasts=category_forecasts,
         forecast_points=forecast_points,
+    )
+
+
+# ── Phase 10b: Custom classifiers ────────────────────────────────────────────
+
+_CLASSIFIER_MIN_SAMPLES_READY = 10
+_CLASSIFIER_BASE_ACCURACY = 0.65
+_CLASSIFIER_ACCURACY_PER_SAMPLE = 0.02
+_CLASSIFIER_MAX_ACCURACY = 0.95
+
+
+@app.post(
+    "/custom-classifiers",
+    response_model=CustomClassifierResponse,
+    tags=["Custom Classifiers"],
+)
+async def create_custom_classifier(
+    body: CustomClassifierCreate,
+    api_key: str = Depends(require_admin),
+) -> CustomClassifierResponse:
+    """Create a custom classifier for organisation-specific categories. Requires admin role."""
+    if not settings.custom_classifiers_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom classifiers are not enabled. Set CUSTOM_CLASSIFIERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    if len(body.categories) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="At least 2 categories are required.",
+        )
+
+    import json as _json  # noqa: PLC0415
+
+    classifier_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        "INSERT INTO custom_classifiers (id, name, description, categories, training_samples, accuracy, status, created_at) VALUES (?, ?, ?, ?, 0, 0.0, 'untrained', ?)",
+        (classifier_id, body.name, body.description, _json.dumps(body.categories), now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_custom_classifier",
+        resource=classifier_id,
+    )
+
+    record = CustomClassifierRecord(
+        id=classifier_id,
+        name=body.name,
+        description=body.description,
+        categories=body.categories,
+        training_samples=0,
+        accuracy=0.0,
+        status="untrained",
+        created_at=datetime.fromisoformat(now),
+    )
+    return CustomClassifierResponse(classifier=record)
+
+
+@app.get(
+    "/custom-classifiers",
+    response_model=CustomClassifierListResponse,
+    tags=["Custom Classifiers"],
+)
+async def list_custom_classifiers(
+    api_key: str = Depends(require_viewer),
+) -> CustomClassifierListResponse:
+    """List all custom classifiers."""
+    if not settings.custom_classifiers_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom classifiers are not enabled. Set CUSTOM_CLASSIFIERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json  # noqa: PLC0415
+
+    async with _db.execute(
+        "SELECT id, name, description, categories, training_samples, accuracy, status, created_at FROM custom_classifiers ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    classifiers = [
+        CustomClassifierRecord(
+            id=r[0],
+            name=r[1],
+            description=r[2],
+            categories=_json.loads(r[3]),
+            training_samples=r[4],
+            accuracy=r[5],
+            status=r[6],
+            created_at=datetime.fromisoformat(r[7]),
+        )
+        for r in rows
+    ]
+    return CustomClassifierListResponse(classifiers=classifiers, total=len(classifiers))
+
+
+@app.delete(
+    "/custom-classifiers/{classifier_id}",
+    tags=["Custom Classifiers"],
+)
+async def delete_custom_classifier(
+    classifier_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete a custom classifier and its training data. Requires admin role."""
+    if not settings.custom_classifiers_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom classifiers are not enabled. Set CUSTOM_CLASSIFIERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id FROM custom_classifiers WHERE id = ?", (classifier_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Custom classifier not found")
+
+    await _db.execute("DELETE FROM classifier_training_data WHERE classifier_id = ?", (classifier_id,))
+    await _db.execute("DELETE FROM custom_classifiers WHERE id = ?", (classifier_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_custom_classifier",
+        resource=classifier_id,
+    )
+
+    return {"success": True, "deleted": classifier_id}
+
+
+@app.post(
+    "/custom-classifiers/{classifier_id}/train",
+    response_model=TrainClassifierResponse,
+    tags=["Custom Classifiers"],
+)
+async def train_custom_classifier(
+    classifier_id: str,
+    body: TrainClassifierRequest,
+    api_key: str = Depends(require_admin),
+) -> TrainClassifierResponse:
+    """Submit training samples for a custom classifier. Requires admin role."""
+    if not settings.custom_classifiers_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom classifiers are not enabled. Set CUSTOM_CLASSIFIERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id, categories, training_samples FROM custom_classifiers WHERE id = ?",
+        (classifier_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Custom classifier not found")
+
+    import json as _json  # noqa: PLC0415
+
+    categories = _json.loads(row[1])
+    current_samples = row[2]
+
+    # Validate that all sample categories exist in the classifier
+    for sample in body.samples:
+        if sample.category not in categories:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Category '{sample.category}' is not defined in this classifier. Valid categories: {categories}",
+            )
+
+    # Store training data
+    now = datetime.now(tz=timezone.utc).isoformat()
+    for sample in body.samples:
+        sample_id = str(uuid.uuid4())
+        await _db.execute(
+            "INSERT INTO classifier_training_data (id, classifier_id, text, category, created_at) VALUES (?, ?, ?, ?, ?)",
+            (sample_id, classifier_id, sample.text, sample.category, now),
+        )
+
+    new_total = current_samples + len(body.samples)
+    new_status = "ready" if new_total >= _CLASSIFIER_MIN_SAMPLES_READY else "untrained"
+    new_accuracy = min(_CLASSIFIER_BASE_ACCURACY + (new_total * _CLASSIFIER_ACCURACY_PER_SAMPLE), _CLASSIFIER_MAX_ACCURACY) if new_total >= _CLASSIFIER_MIN_SAMPLES_READY else 0.0
+
+    await _db.execute(
+        "UPDATE custom_classifiers SET training_samples = ?, status = ?, accuracy = ? WHERE id = ?",
+        (new_total, new_status, round(new_accuracy, 4), classifier_id),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="train_custom_classifier",
+        resource=classifier_id,
+    )
+
+    return TrainClassifierResponse(
+        classifier_id=classifier_id,
+        samples_added=len(body.samples),
+        total_samples=new_total,
+        status=new_status,
+    )
+
+
+@app.post(
+    "/custom-classifiers/{classifier_id}/classify",
+    response_model=ClassifyResponse,
+    tags=["Custom Classifiers"],
+)
+async def classify_text(
+    classifier_id: str,
+    body: ClassifyRequest,
+    api_key: str = Depends(require_viewer),
+) -> ClassifyResponse:
+    """Classify text using a custom classifier."""
+    if not settings.custom_classifiers_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Custom classifiers are not enabled. Set CUSTOM_CLASSIFIERS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id, categories, status FROM custom_classifiers WHERE id = ?",
+        (classifier_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Custom classifier not found")
+
+    if row[2] != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail="Classifier is not ready. Train with at least 10 samples first.",
+        )
+
+    import json as _json  # noqa: PLC0415
+
+    categories = _json.loads(row[1])
+
+    # Fetch training data for keyword matching
+    async with _db.execute(
+        "SELECT text, category FROM classifier_training_data WHERE classifier_id = ?",
+        (classifier_id,),
+    ) as cursor:
+        training_rows = await cursor.fetchall()
+
+    # Simulate classification using keyword matching
+    input_lower = body.text.lower()
+    scores: dict[str, float] = {cat: 0.0 for cat in categories}
+
+    for t_row in training_rows:
+        sample_text = t_row[0].lower()
+        sample_cat = t_row[1]
+        # Count word overlaps between input and training sample
+        sample_words = set(sample_text.split())
+        input_words = set(input_lower.split())
+        overlap = len(sample_words & input_words)
+        if overlap > 0:
+            scores[sample_cat] = scores.get(sample_cat, 0.0) + overlap
+
+    # Normalise scores to probabilities
+    total_score = sum(scores.values())
+    if total_score > 0:
+        scores = {cat: round(s / total_score, 4) for cat, s in scores.items()}
+    else:
+        # Equal distribution if no matches
+        equal = round(1.0 / len(categories), 4)
+        scores = {cat: equal for cat in categories}
+
+    predicted_category = max(scores, key=lambda c: scores[c])
+    confidence = scores[predicted_category]
+
+    return ClassifyResponse(
+        classifier_id=classifier_id,
+        text=body.text,
+        predicted_category=predicted_category,
+        confidence=confidence,
+        all_scores=scores,
+    )
+
+
+# ── Phase 10b: Anomaly detection ─────────────────────────────────────────────
+
+
+_VALID_ANOMALY_METRICS = {"volume", "category_shift", "priority_spike", "resolution_time"}
+_SEVERITY_CRITICAL_MULTIPLIER = 2.0
+_SEVERITY_HIGH_MULTIPLIER = 1.5
+
+
+@app.post(
+    "/anomaly-rules",
+    response_model=AnomalyRuleResponse,
+    tags=["Anomaly Detection"],
+)
+async def create_anomaly_rule(
+    body: AnomalyRuleCreate,
+    api_key: str = Depends(require_admin),
+) -> AnomalyRuleResponse:
+    """Create an anomaly detection rule. Requires admin role."""
+    if not settings.anomaly_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Anomaly detection is not enabled. Set ANOMALY_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    if body.metric not in _VALID_ANOMALY_METRICS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid metric '{body.metric}'. Must be one of: {', '.join(sorted(_VALID_ANOMALY_METRICS))}",
+        )
+
+    rule_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    await _db.execute(
+        "INSERT INTO anomaly_rules (id, name, metric, threshold, window_hours, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (rule_id, body.name, body.metric, body.threshold, body.window_hours, 1 if body.enabled else 0, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_anomaly_rule",
+        resource=rule_id,
+    )
+
+    record = AnomalyRuleRecord(
+        id=rule_id,
+        name=body.name,
+        metric=body.metric,
+        threshold=body.threshold,
+        window_hours=body.window_hours,
+        enabled=body.enabled,
+        created_at=datetime.fromisoformat(now),
+    )
+    return AnomalyRuleResponse(rule=record)
+
+
+@app.get(
+    "/anomaly-rules",
+    response_model=AnomalyRuleListResponse,
+    tags=["Anomaly Detection"],
+)
+async def list_anomaly_rules(
+    api_key: str = Depends(require_viewer),
+) -> AnomalyRuleListResponse:
+    """List all anomaly detection rules."""
+    if not settings.anomaly_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Anomaly detection is not enabled. Set ANOMALY_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id, name, metric, threshold, window_hours, enabled, created_at FROM anomaly_rules ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    rules = [
+        AnomalyRuleRecord(
+            id=r[0],
+            name=r[1],
+            metric=r[2],
+            threshold=r[3],
+            window_hours=r[4],
+            enabled=bool(r[5]),
+            created_at=datetime.fromisoformat(r[6]),
+        )
+        for r in rows
+    ]
+    return AnomalyRuleListResponse(rules=rules, total=len(rules))
+
+
+@app.delete(
+    "/anomaly-rules/{rule_id}",
+    tags=["Anomaly Detection"],
+)
+async def delete_anomaly_rule(
+    rule_id: str,
+    api_key: str = Depends(require_admin),
+) -> dict:
+    """Delete an anomaly detection rule. Requires admin role."""
+    if not settings.anomaly_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Anomaly detection is not enabled. Set ANOMALY_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    async with _db.execute(
+        "SELECT id FROM anomaly_rules WHERE id = ?", (rule_id,)
+    ) as cursor:
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Anomaly rule not found")
+
+    await _db.execute("DELETE FROM anomaly_rules WHERE id = ?", (rule_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_anomaly_rule",
+        resource=rule_id,
+    )
+
+    return {"success": True, "deleted": rule_id}
+
+
+@app.get(
+    "/analytics/anomalies",
+    response_model=AnomalyDetectionResponse,
+    tags=["Anomaly Detection"],
+)
+async def detect_anomalies(
+    hours: int = Query(default=24, ge=1, le=720, description="Analysis window in hours"),
+    api_key: str = Depends(require_viewer),
+) -> AnomalyDetectionResponse:
+    """Detect anomalies based on configured rules."""
+    if not settings.anomaly_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Anomaly detection is not enabled. Set ANOMALY_DETECTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Get enabled rules
+    async with _db.execute(
+        "SELECT id, name, metric, threshold, window_hours, enabled FROM anomaly_rules WHERE enabled = 1"
+    ) as cursor:
+        rule_rows = await cursor.fetchall()
+
+    now = datetime.now(tz=timezone.utc)
+    anomalies: list[DetectedAnomaly] = []
+
+    for rule in rule_rows:
+        rule_metric = rule[2]
+        rule_threshold = rule[3]
+        rule_window = min(rule[4], hours)
+        window_start = (now - timedelta(hours=rule_window)).isoformat()
+        prev_window_start = (now - timedelta(hours=rule_window * 2)).isoformat()
+
+        if rule_metric == "volume":
+            # Compare current window ticket volume to previous window
+            async with _db.execute(
+                "SELECT COUNT(*) FROM processed_tickets WHERE processed_at >= ?",
+                (window_start,),
+            ) as cur:
+                current_row = await cur.fetchone()
+            current_count = current_row[0] if current_row else 0
+
+            async with _db.execute(
+                "SELECT COUNT(*) FROM processed_tickets WHERE processed_at >= ? AND processed_at < ?",
+                (prev_window_start, window_start),
+            ) as cur:
+                prev_row = await cur.fetchone()
+            prev_count = prev_row[0] if prev_row else 0
+
+            if prev_count > 0:
+                ratio = current_count / prev_count
+                if ratio > (1 + rule_threshold):
+                    if ratio > (1 + rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER):
+                        severity = "critical"
+                    elif ratio > (1 + rule_threshold * _SEVERITY_HIGH_MULTIPLIER):
+                        severity = "high"
+                    else:
+                        severity = "medium"
+                    anomalies.append(DetectedAnomaly(
+                        anomaly_type="volume",
+                        severity=severity,
+                        metric_value=float(current_count),
+                        threshold=rule_threshold,
+                        description=f"Ticket volume spike: {current_count} tickets in last {rule_window}h vs {prev_count} in previous window ({ratio:.1f}x increase)",
+                        detected_at=now.isoformat(),
+                        window_hours=rule_window,
+                    ))
+
+        elif rule_metric == "category_shift":
+            # Detect unusual category distribution changes
+            async with _db.execute(
+                "SELECT category, COUNT(*) FROM processed_tickets WHERE processed_at >= ? GROUP BY category",
+                (window_start,),
+            ) as cur:
+                current_cats = await cur.fetchall()
+
+            async with _db.execute(
+                "SELECT category, COUNT(*) FROM processed_tickets WHERE processed_at >= ? AND processed_at < ? GROUP BY category",
+                (prev_window_start, window_start),
+            ) as cur:
+                prev_cats = await cur.fetchall()
+
+            prev_dist: dict[str, int] = {r[0]: r[1] for r in prev_cats}
+            total_prev = sum(prev_dist.values()) or 1
+
+            for cat_row in current_cats:
+                cat_name, cat_count = cat_row[0], cat_row[1]
+                prev_cat_count = prev_dist.get(cat_name, 0)
+                prev_ratio = prev_cat_count / total_prev
+                curr_total = sum(r[1] for r in current_cats) or 1
+                curr_ratio = cat_count / curr_total
+
+                if prev_ratio > 0 and curr_ratio > 0:
+                    shift = abs(curr_ratio - prev_ratio) / prev_ratio
+                    if shift > rule_threshold:
+                        anomalies.append(DetectedAnomaly(
+                            anomaly_type="category_shift",
+                            severity="medium" if shift < rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER else "high",
+                            metric_value=round(shift, 4),
+                            threshold=rule_threshold,
+                            description=f"Category '{cat_name}' distribution shifted by {shift:.0%} (was {prev_ratio:.0%}, now {curr_ratio:.0%})",
+                            detected_at=now.isoformat(),
+                            window_hours=rule_window,
+                        ))
+
+        elif rule_metric == "priority_spike":
+            # Detect increase in high/critical priority tickets
+            async with _db.execute(
+                "SELECT COUNT(*) FROM processed_tickets WHERE processed_at >= ? AND priority IN ('critical', 'high')",
+                (window_start,),
+            ) as cur:
+                high_row = await cur.fetchone()
+            high_count = high_row[0] if high_row else 0
+
+            async with _db.execute(
+                "SELECT COUNT(*) FROM processed_tickets WHERE processed_at >= ?",
+                (window_start,),
+            ) as cur:
+                total_row = await cur.fetchone()
+            total_count = total_row[0] if total_row else 0
+
+            if total_count > 0:
+                high_ratio = high_count / total_count
+                if high_ratio > rule_threshold:
+                    severity = "critical" if high_ratio > rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER else "high"
+                    anomalies.append(DetectedAnomaly(
+                        anomaly_type="priority_spike",
+                        severity=severity,
+                        metric_value=round(high_ratio, 4),
+                        threshold=rule_threshold,
+                        description=f"High/critical priority spike: {high_count}/{total_count} tickets ({high_ratio:.0%}) exceed threshold ({rule_threshold:.0%})",
+                        detected_at=now.isoformat(),
+                        window_hours=rule_window,
+                    ))
+
+        elif rule_metric == "resolution_time":
+            # Detect unusually long open ticket age (hours since processing)
+            async with _db.execute(
+                "SELECT AVG(CAST((julianday('now') - julianday(processed_at)) * 24 AS REAL)) FROM processed_tickets WHERE processed_at >= ? AND ticket_status IN ('open', 'in_progress')",
+                (window_start,),
+            ) as cur:
+                avg_row = await cur.fetchone()
+            avg_hours = avg_row[0] if avg_row and avg_row[0] is not None else 0.0
+
+            if avg_hours > rule_threshold:
+                severity = "high" if avg_hours > rule_threshold * _SEVERITY_CRITICAL_MULTIPLIER else "medium"
+                anomalies.append(DetectedAnomaly(
+                    anomaly_type="resolution_time",
+                    severity=severity,
+                    metric_value=round(avg_hours, 2),
+                    threshold=rule_threshold,
+                    description=f"Average resolution time {avg_hours:.1f}h exceeds threshold of {rule_threshold:.1f}h",
+                    detected_at=now.isoformat(),
+                    window_hours=rule_window,
+                ))
+
+    return AnomalyDetectionResponse(
+        anomalies=anomalies,
+        total_anomalies=len(anomalies),
+        analysis_window_hours=hours,
+    )
+
+
+# ── Phase 10b: KB auto-generation ────────────────────────────────────────────
+
+_KB_BASE_CONFIDENCE = 0.5
+_KB_CONFIDENCE_PER_TICKET = 0.05
+_KB_MAX_CONFIDENCE = 0.95
+_KB_MAX_SUMMARIES_PER_ARTICLE = 10
+
+
+@app.post(
+    "/kb/auto-generate",
+    response_model=KBAutoGenerateResponse,
+    tags=["KB Auto-Generation"],
+)
+async def kb_auto_generate(
+    body: KBAutoGenerateRequest,
+    api_key: str = Depends(require_admin),
+) -> KBAutoGenerateResponse:
+    """Generate KB articles from resolved ticket patterns. Requires admin role."""
+    if not settings.kb_auto_generation_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="KB auto-generation is not enabled. Set KB_AUTO_GENERATION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Query resolved tickets, optionally filtered by category
+    if body.category:
+        async with _db.execute(
+            "SELECT id, category, summary, source FROM processed_tickets WHERE ticket_status = 'resolved' AND category = ? ORDER BY processed_at DESC",
+            (body.category,),
+        ) as cursor:
+            ticket_rows = await cursor.fetchall()
+    else:
+        async with _db.execute(
+            "SELECT id, category, summary, source FROM processed_tickets WHERE ticket_status = 'resolved' ORDER BY processed_at DESC",
+        ) as cursor:
+            ticket_rows = await cursor.fetchall()
+
+    # Group tickets by category
+    by_category: dict[str, list[tuple]] = {}
+    for t in ticket_rows:
+        cat = t[1] or "uncategorised"
+        by_category.setdefault(cat, []).append(t)
+
+    articles: list[GeneratedKBArticle] = []
+    for cat, tickets in sorted(by_category.items()):
+        if len(tickets) < body.min_resolved_tickets:
+            continue
+        if len(articles) >= body.max_articles:
+            break
+
+        # Generate article from ticket patterns
+        summaries = [t[2] for t in tickets if t[2]]
+        if not summaries:
+            continue
+
+        title = f"Troubleshooting Guide: {cat.replace('_', ' ').title()}"
+        content_parts = [f"# {title}\n"]
+        content_parts.append(f"This article was auto-generated from {len(tickets)} resolved tickets in the '{cat}' category.\n")
+        content_parts.append("## Common Issues and Solutions\n")
+
+        # Use unique summaries as content
+        seen: set[str] = set()
+        for summary in summaries[:_KB_MAX_SUMMARIES_PER_ARTICLE]:
+            normalised = summary.strip().lower()
+            if normalised not in seen:
+                seen.add(normalised)
+                content_parts.append(f"- {summary}")
+
+        content = "\n".join(content_parts)
+
+        confidence = min(_KB_BASE_CONFIDENCE + (len(tickets) * _KB_CONFIDENCE_PER_TICKET), _KB_MAX_CONFIDENCE)
+        tags = [cat, "auto-generated", "resolved-patterns"]
+
+        articles.append(GeneratedKBArticle(
+            title=title,
+            content=content,
+            category=cat,
+            source_ticket_count=len(tickets),
+            confidence=round(confidence, 4),
+            tags=tags,
+        ))
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="kb_auto_generate",
+        resource=f"{len(articles)}_articles",
+    )
+
+    return KBAutoGenerateResponse(
+        articles=articles,
+        total_generated=len(articles),
+    )
+
+
+@app.get(
+    "/kb/auto-generate/suggestions",
+    response_model=KBAutoGenerateSuggestionsResponse,
+    tags=["KB Auto-Generation"],
+)
+async def kb_auto_generate_suggestions(
+    api_key: str = Depends(require_viewer),
+) -> KBAutoGenerateSuggestionsResponse:
+    """Show categories where KB articles could be auto-generated."""
+    if not settings.kb_auto_generation_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="KB auto-generation is not enabled. Set KB_AUTO_GENERATION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Count resolved tickets per category
+    async with _db.execute(
+        "SELECT category, COUNT(*) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY category ORDER BY COUNT(*) DESC",
+    ) as cursor:
+        resolved_rows = await cursor.fetchall()
+
+    # Count existing KB articles per category
+    async with _db.execute(
+        "SELECT category, COUNT(*) FROM kb_articles GROUP BY category",
+    ) as cursor:
+        kb_rows = await cursor.fetchall()
+
+    kb_counts: dict[str, int] = {r[0]: r[1] for r in kb_rows}
+
+    suggestions: list[KBSuggestion] = []
+    for row in resolved_rows:
+        cat = row[0] or "uncategorised"
+        resolved_count = row[1]
+        existing_count = kb_counts.get(cat, 0)
+
+        # Score based on resolved tickets and gap in KB coverage
+        score = resolved_count * (1.0 / (existing_count + 1))
+        suggested_title = f"Troubleshooting Guide: {cat.replace('_', ' ').title()}"
+
+        suggestions.append(KBSuggestion(
+            category=cat,
+            resolved_ticket_count=resolved_count,
+            existing_article_count=existing_count,
+            suggestion_score=round(score, 2),
+            suggested_title=suggested_title,
+        ))
+
+    # Sort by score descending
+    suggestions.sort(key=lambda s: s.suggestion_score, reverse=True)
+
+    return KBAutoGenerateSuggestionsResponse(
+        suggestions=suggestions,
+        total_suggestions=len(suggestions),
     )
 
 

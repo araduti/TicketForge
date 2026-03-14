@@ -370,9 +370,9 @@ With all 40 original recommendations delivered, Phase 10 shifts focus from closi
 
 | # | Recommendation | Effort | Impact | Status |
 |---|---------------|--------|--------|--------|
-| 44 | **Add custom classifiers** (user-trained classification models for organisation-specific categories) | High | High | 🔲 Planned |
-| 45 | **Add anomaly detection** (statistical alerting on ticket volume spikes, new error patterns, unusual trends) | High | High | 🔲 Planned |
-| 46 | **Add KB auto-generation** (LLM-powered knowledge base article creation from resolved ticket patterns) | High | Medium | 🔲 Planned |
+| 44 | **Add custom classifiers** (user-trained classification models for organisation-specific categories) | High | High | ✅ Done |
+| 45 | **Add anomaly detection** (statistical alerting on ticket volume spikes, new error patterns, unusual trends) | High | High | ✅ Done |
+| 46 | **Add KB auto-generation** (LLM-powered knowledge base article creation from resolved ticket patterns) | High | Medium | ✅ Done |
 
 #### 10c. Platform Maturity (8-10 weeks)
 

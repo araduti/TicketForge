@@ -397,6 +397,24 @@ class Settings(BaseSettings):
         description="Enable volume forecasting with historical trend analysis (GET /analytics/volume-forecast)",
     )
 
+    # ── Phase 10b: Custom classifiers ─────────────────────────────────────────
+    custom_classifiers_enabled: bool = Field(
+        default=False,
+        description="Enable custom classifiers (POST/GET/DELETE /custom-classifiers, POST /custom-classifiers/{id}/train, POST /custom-classifiers/{id}/classify)",
+    )
+
+    # ── Phase 10b: Anomaly detection ──────────────────────────────────────────
+    anomaly_detection_enabled: bool = Field(
+        default=False,
+        description="Enable anomaly detection (GET /analytics/anomalies, POST/GET/DELETE /anomaly-rules)",
+    )
+
+    # ── Phase 10b: KB auto-generation ─────────────────────────────────────────
+    kb_auto_generation_enabled: bool = Field(
+        default=False,
+        description="Enable KB auto-generation from resolved tickets (POST /kb/auto-generate, GET /kb/auto-generate/suggestions)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
