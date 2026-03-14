@@ -333,6 +333,17 @@ These add operational features that streamline agent workflows and enable advanc
 | 29 | **Add ticket tags** (labelling system for organising and filtering tickets) | Low | Medium | ✅ Done |
 | 30 | **Add saved filters** (named query filters for quick access to ticket subsets) | Low | Medium | ✅ Done |
 
+### Phase 8: Predictive Analytics & Workflow Automation (14-16 months)
+These add predictive capabilities and workflow efficiency features for agents and managers:
+
+| # | Recommendation | Effort | Impact | Status |
+|---|---------------|--------|--------|--------|
+| 31 | **Add SLA breach prediction** (`GET /analytics/sla-predictions` with risk scoring based on historical resolution times) | Medium | High | ✅ Done |
+| 32 | **Add response templates** (`POST/GET/DELETE /response-templates` for reusable category-specific responses) | Low | Medium | ✅ Done |
+| 33 | **Add ticket activity timeline** (`GET /tickets/{id}/activity`, `POST /tickets/{id}/comments` for internal notes and audit trail) | Medium | Medium | ✅ Done |
+| 34 | **Add bulk operations** (`POST /tickets/bulk/status`, `POST /tickets/bulk/tags` for batch ticket management) | Medium | High | ✅ Done |
+| 35 | **Add agent skill-based routing** (`POST/GET /agent-skills`, `GET /tickets/{id}/recommended-agents` for intelligent assignment) | High | High | ✅ Done |
+
 ### Prioritization Framework
 
 ```

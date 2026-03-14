@@ -48,6 +48,11 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **Custom Fields** | `POST /custom-fields` defines organisation-specific metadata fields (text/number/boolean/select) for tickets |
 | **Ticket Tags** | `POST /tickets/{id}/tags` adds labels for organising tickets; tags are normalised and deduplicated |
 | **Saved Filters** | `POST /filters` creates named ticket query filters for quick access by analysts and admins |
+| **SLA Breach Prediction** | `GET /analytics/sla-predictions` provides predictive analytics for open tickets with risk scoring based on historical resolution times |
+| **Response Templates** | `POST/GET/DELETE /response-templates` manages reusable category-specific response drafts for efficient agent replies |
+| **Ticket Activity Timeline** | `GET /tickets/{id}/activity` and `POST /tickets/{id}/comments` provide internal comments and full activity history |
+| **Bulk Operations** | `POST /tickets/bulk/status` and `POST /tickets/bulk/tags` enable batch status updates and tag additions across multiple tickets |
+| **Agent Skill-Based Routing** | `POST/GET /agent-skills` and `GET /tickets/{id}/recommended-agents` enable intelligent ticket assignment based on agent expertise |
 
 ---
 
@@ -550,6 +555,11 @@ All settings are read from environment variables (or a `.env` file):
 | `CUSTOM_FIELDS_ENABLED` | `false` | Enable custom field definition endpoints (`/custom-fields`) |
 | `TICKET_TAGS_ENABLED` | `false` | Enable ticket tagging endpoints (`/tickets/{id}/tags`) |
 | `SAVED_FILTERS_ENABLED` | `false` | Enable saved filter endpoints (`/filters`) |
+| `SLA_PREDICTION_ENABLED` | `false` | Enable SLA breach prediction analytics |
+| `RESPONSE_TEMPLATES_ENABLED` | `false` | Enable response template management |
+| `TICKET_TIMELINE_ENABLED` | `false` | Enable ticket activity timeline and comments |
+| `BULK_OPERATIONS_ENABLED` | `false` | Enable bulk ticket operations |
+| `SKILL_ROUTING_ENABLED` | `false` | Enable agent skill-based routing |
 
 ---
 
