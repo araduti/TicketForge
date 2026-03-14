@@ -278,3 +278,54 @@ class AuditLogResponse(BaseModel):
 class ExportFormat(str, Enum):
     json = "json"
     csv = "csv"
+
+
+# ── Response suggestion models ────────────────────────────────────────────────
+
+class SuggestResponseRequest(BaseModel):
+    """POST /suggest-response — generate a draft agent response for a ticket."""
+
+    ticket_id: str = Field(..., description="ID of a previously analysed ticket")
+    additional_context: str = Field(default="", description="Optional extra context for the response")
+
+
+class SuggestedResponse(BaseModel):
+    """AI-generated draft response for an agent."""
+
+    ticket_id: str
+    subject: str = Field(default="", description="Email-style subject line")
+    body: str = Field(default="", description="Response message body")
+    tone: str = Field(default="professional", description="Detected tone: empathetic, professional, urgent, informational")
+    suggested_actions: list[str] = Field(default_factory=list, description="Recommended next steps")
+
+
+class SuggestResponseResponse(BaseModel):
+    success: bool = True
+    data: SuggestedResponse
+
+
+# ── Duplicate detection models ────────────────────────────────────────────────
+
+class DuplicateCandidate(BaseModel):
+    """A ticket that may be a duplicate of the query ticket."""
+
+    ticket_id: str
+    title: str = Field(default="")
+    similarity_score: float = Field(ge=0.0, le=1.0, description="Cosine similarity 0.0-1.0")
+
+
+class DetectDuplicatesRequest(BaseModel):
+    """POST /tickets/detect-duplicates — find similar tickets."""
+
+    ticket_id: str = Field(default="", description="ID of an existing ticket to find duplicates for")
+    title: str = Field(default="", description="Title text to search for duplicates (if ticket_id not provided)")
+    description: str = Field(default="", description="Description text to search for duplicates")
+    threshold: float = Field(default=0.75, ge=0.0, le=1.0, description="Minimum similarity score to consider a duplicate")
+    max_results: int = Field(default=5, ge=1, le=20, description="Maximum number of duplicate candidates to return")
+
+
+class DetectDuplicatesResponse(BaseModel):
+    success: bool = True
+    query_ticket_id: str = Field(default="", description="The ticket ID being checked")
+    duplicates: list[DuplicateCandidate] = Field(default_factory=list)
+    total_candidates: int = 0

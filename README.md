@@ -24,6 +24,9 @@ root-cause hypotheses — all running locally with Ollama on a ~$10-20/mo VPS.
 | **Ticket Lifecycle** | Track ticket status (open/in_progress/resolved/closed) via `PATCH /tickets/{id}/status` |
 | **Language Detection** | Auto-detects ticket language (ISO 639-1) during analysis |
 | **Slack & Teams Alerts** | Push notifications for high-priority tickets and SLA breaches to Slack and Microsoft Teams |
+| **AI Response Suggestions** | `POST /suggest-response` generates draft agent responses for enriched tickets using the LLM |
+| **Duplicate Detection** | `POST /tickets/detect-duplicates` finds similar tickets using sentence-transformer vector similarity |
+| **Web Dashboard** | Built-in HTML dashboard at `GET /dashboard` showing tickets, analytics charts, and SLA overview |
 
 ---
 
