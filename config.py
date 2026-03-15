@@ -17,11 +17,11 @@ class Settings(BaseSettings):
     )
 
     # ── API security ──────────────────────────────────────────────────────────
-    api_keys: list[str] = Field(
+    api_keys: str | list[str] = Field(
         default=["changeme"],
         description="Comma-separated list of valid API keys (set via API_KEYS env var)",
     )
-    api_key_roles: dict[str, str] = Field(
+    api_key_roles: str | dict[str, str] = Field(
         default_factory=dict,
         description=(
             "JSON mapping of API key to role (admin/analyst/viewer). "
