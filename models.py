@@ -1798,3 +1798,243 @@ class OnboardingCompleteStepResponse(BaseModel):
     step_id: str = ""
     already_completed: bool = False
 
+
+# ── Phase 11a: Conversational Intelligence ────────────────────────────────────
+
+# 51. Multi-step Troubleshooting Flows
+
+
+class TroubleshootingStepType(str, Enum):
+    question = "question"
+    action = "action"
+    resolution = "resolution"
+    branch = "branch"
+
+
+class TroubleshootingStep(BaseModel):
+    id: str = Field(...)
+    step_type: TroubleshootingStepType
+    title: str
+    content: str = ""
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    next_step_id: str | None = None
+
+
+class TroubleshootingFlowCreate(BaseModel):
+    """POST /troubleshooting/flows — create a troubleshooting flow."""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = ""
+    category: str = "general"
+    steps: list[TroubleshootingStep] = Field(default_factory=list)
+
+
+class TroubleshootingFlowRecord(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    category: str = "general"
+    steps: list[TroubleshootingStep] = Field(default_factory=list)
+    status: str = "active"
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime | None = None
+
+
+class TroubleshootingFlowResponse(BaseModel):
+    success: bool = True
+    flow: TroubleshootingFlowRecord
+
+
+class TroubleshootingFlowListResponse(BaseModel):
+    success: bool = True
+    flows: list[TroubleshootingFlowRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class TroubleshootingExecuteRequest(BaseModel):
+    """POST /troubleshooting/execute — execute a troubleshooting step."""
+
+    flow_id: str = Field(...)
+    current_step_id: str | None = None
+    selected_option: str | None = None
+
+
+class TroubleshootingExecuteResponse(BaseModel):
+    success: bool = True
+    flow_id: str
+    current_step: TroubleshootingStep | None = None
+    is_complete: bool = False
+    resolution: str | None = None
+
+
+# 52. Intent Detection & Entity Extraction
+
+
+class IntentResult(BaseModel):
+    intent: str
+    confidence: float = 0.0
+    sub_intents: list[str] = Field(default_factory=list)
+
+
+class ExtractedEntity(BaseModel):
+    entity_type: str
+    value: str
+    confidence: float = 0.0
+    start_pos: int = 0
+    end_pos: int = 0
+
+
+class IntentDetectionRequest(BaseModel):
+    """POST /intent/detect — detect intent from text."""
+
+    text: str = Field(..., min_length=1)
+
+
+class IntentDetectionResponse(BaseModel):
+    success: bool = True
+    text: str
+    primary_intent: IntentResult
+    all_intents: list[IntentResult] = Field(default_factory=list)
+
+
+class EntityExtractionRequest(BaseModel):
+    """POST /entities/extract — extract entities from text."""
+
+    text: str = Field(..., min_length=1)
+    entity_types: list[str] = Field(
+        default_factory=lambda: [
+            "user",
+            "device",
+            "error_code",
+            "application",
+            "location",
+        ]
+    )
+
+
+class EntityExtractionResponse(BaseModel):
+    success: bool = True
+    text: str
+    entities: list[ExtractedEntity] = Field(default_factory=list)
+    entity_count: int = 0
+
+
+# ── Phase 11b: Predictive Intelligence ────────────────────────────────────────
+
+# 53. Resolution Time Prediction
+
+
+class ResolutionFactor(BaseModel):
+    factor: str
+    impact: str
+    weight: float = 0.0
+
+
+class ResolutionPrediction(BaseModel):
+    ticket_id: str
+    predicted_hours: float = 0.0
+    confidence: float = 0.0
+    factors: list[ResolutionFactor] = Field(default_factory=list)
+    predicted_at: datetime = Field(default_factory=_utcnow)
+
+
+class ResolutionPredictionResponse(BaseModel):
+    success: bool = True
+    prediction: ResolutionPrediction
+
+
+class ResolutionStatsResponse(BaseModel):
+    success: bool = True
+    avg_resolution_hours: float = 0.0
+    median_resolution_hours: float = 0.0
+    p95_resolution_hours: float = 0.0
+    total_resolved: int = 0
+    by_category: dict[str, float] = Field(default_factory=dict)
+    by_priority: dict[str, float] = Field(default_factory=dict)
+
+
+# 54. Satisfaction Prediction
+
+
+class SatisfactionFactor(BaseModel):
+    factor: str
+    impact: str
+    weight: float = 0.0
+
+
+class SatisfactionPrediction(BaseModel):
+    ticket_id: str
+    predicted_score: float = 0.0
+    confidence: float = 0.0
+    risk_level: str = "low"
+    factors: list[SatisfactionFactor] = Field(default_factory=list)
+    predicted_at: datetime = Field(default_factory=_utcnow)
+
+
+class SatisfactionPredictionResponse(BaseModel):
+    success: bool = True
+    prediction: SatisfactionPrediction
+
+
+class SatisfactionTrendsResponse(BaseModel):
+    success: bool = True
+    avg_score: float = 0.0
+    trend_direction: str = "stable"
+    period_scores: list[dict[str, Any]] = Field(default_factory=list)
+    total_ratings: int = 0
+
+
+# ── Phase 11c: Smart Assignment ───────────────────────────────────────────────
+
+# 55. Intelligent Agent Assignment
+
+
+class AgentPerformanceProfile(BaseModel):
+    agent_id: str
+    name: str = ""
+    categories: dict[str, float] = Field(default_factory=dict)
+    avg_resolution_hours: float = 0.0
+    avg_satisfaction: float = 0.0
+    current_load: int = 0
+    max_capacity: int = 10
+    specialisations: list[str] = Field(default_factory=list)
+
+
+class AgentProfileCreate(BaseModel):
+    """POST /agents/profiles — create an agent performance profile."""
+
+    agent_id: str = Field(...)
+    name: str = ""
+    specialisations: list[str] = Field(default_factory=list)
+    max_capacity: int = Field(default=10, ge=1, le=100)
+
+
+class AgentProfileResponse(BaseModel):
+    success: bool = True
+    profile: AgentPerformanceProfile
+
+
+class AgentProfileListResponse(BaseModel):
+    success: bool = True
+    profiles: list[AgentPerformanceProfile] = Field(default_factory=list)
+    total: int = 0
+
+
+class SmartAssignmentResult(BaseModel):
+    ticket_id: str
+    recommended_agent_id: str
+    agent_name: str = ""
+    score: float = 0.0
+    reasons: list[str] = Field(default_factory=list)
+
+
+class SmartAssignmentResponse(BaseModel):
+    success: bool = True
+    assignment: SmartAssignmentResult
+
+
+class AgentPerformanceMatrixResponse(BaseModel):
+    success: bool = True
+    agents: list[AgentPerformanceProfile] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+

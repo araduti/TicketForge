@@ -39,6 +39,11 @@ from connectors.servicenow import ServiceNowConnector
 from connectors.zendesk import ZendeskConnector
 from models import (
     ActivityType,
+    AgentPerformanceMatrixResponse,
+    AgentPerformanceProfile,
+    AgentProfileCreate,
+    AgentProfileListResponse,
+    AgentProfileResponse,
     AgentRecommendation,
     AgentRecommendationResponse,
     AgentSkillCreate,
@@ -120,11 +125,17 @@ from models import (
     EnhancedSLAPrediction,
     EnhancedSLARiskResponse,
     EnrichedTicket,
+    EntityExtractionRequest,
+    EntityExtractionResponse,
     ErrorResponse,
     EscalationStatusResponse,
     ExportFormat,
+    ExtractedEntity,
     GeneratedKBArticle,
     HealthResponse,
+    IntentDetectionRequest,
+    IntentDetectionResponse,
+    IntentResult,
     KBArticleCreate,
     KBArticleListResponse,
     KBArticleRecord,
@@ -163,6 +174,10 @@ from models import (
     PriorityCount,
     PriorityResult,
     RawTicket,
+    ResolutionFactor,
+    ResolutionPrediction,
+    ResolutionPredictionResponse,
+    ResolutionStatsResponse,
     ResponseTemplateCreate,
     ResponseTemplateListResponse,
     ResponseTemplateRecord,
@@ -170,6 +185,10 @@ from models import (
     Role,
     RootCauseHypothesis,
     RoutingResult,
+    SatisfactionFactor,
+    SatisfactionPrediction,
+    SatisfactionPredictionResponse,
+    SatisfactionTrendsResponse,
     SavedFilterCreate,
     SavedFilterListResponse,
     SavedFilterRecord,
@@ -191,6 +210,8 @@ from models import (
     SLARiskThresholdRecord,
     SLARiskThresholdResponse,
     SLAStatus,
+    SmartAssignmentResponse,
+    SmartAssignmentResult,
     SuggestedResponse,
     SuggestResponseRequest,
     SuggestResponseResponse,
@@ -217,6 +238,14 @@ from models import (
     TrainClassifierRequest,
     TrainClassifierResponse,
     TrainingSample,
+    TroubleshootingExecuteRequest,
+    TroubleshootingExecuteResponse,
+    TroubleshootingFlowCreate,
+    TroubleshootingFlowListResponse,
+    TroubleshootingFlowRecord,
+    TroubleshootingFlowResponse,
+    TroubleshootingStep,
+    TroubleshootingStepType,
     UserPreferences,
     UserPreferencesResponse,
     UserPreferencesUpdate,
@@ -318,7 +347,9 @@ CREATE TABLE IF NOT EXISTS processed_tickets (
     summary TEXT,
     sentiment TEXT DEFAULT 'neutral',
     detected_language TEXT DEFAULT 'en',
-    ticket_status TEXT DEFAULT 'open'
+    ticket_status TEXT DEFAULT 'open',
+    created_at TEXT DEFAULT NULL,
+    updated_at TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ticket_history (
@@ -573,6 +604,30 @@ CREATE TABLE IF NOT EXISTS onboarding_progress (
     step_id TEXT NOT NULL,
     completed_at TEXT NOT NULL,
     UNIQUE(user_id, step_id)
+);
+
+CREATE TABLE IF NOT EXISTS troubleshooting_flows (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'general',
+    steps TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    agent_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    specialisations TEXT NOT NULL DEFAULT '[]',
+    max_capacity INTEGER NOT NULL DEFAULT 10,
+    current_load INTEGER NOT NULL DEFAULT 0,
+    avg_resolution_hours REAL NOT NULL DEFAULT 0.0,
+    avg_satisfaction REAL NOT NULL DEFAULT 0.0,
+    categories TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
 );
 """
 
@@ -7108,6 +7163,905 @@ async def complete_onboarding_step(
     return OnboardingCompleteStepResponse(
         step_id=body.step_id,
         already_completed=False,
+    )
+
+
+# ── Phase 11a: Conversational Intelligence ─────────────────────────────────────
+
+
+# 51. Multi-step Troubleshooting Flows
+
+
+@app.post(
+    "/troubleshooting/flows",
+    response_model=TroubleshootingFlowResponse,
+    tags=["Troubleshooting Flows"],
+)
+async def create_troubleshooting_flow(
+    body: TroubleshootingFlowCreate,
+    api_key: str = Depends(require_analyst),
+) -> TroubleshootingFlowResponse:
+    """Create a new multi-step troubleshooting flow."""
+    if not settings.troubleshooting_flows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Troubleshooting flows are not enabled. Set TROUBLESHOOTING_FLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    flow_id = str(uuid.uuid4())
+    now = datetime.now(tz=timezone.utc).isoformat()
+    steps_json = _json.dumps([s.model_dump() for s in body.steps])
+
+    await _db.execute(
+        "INSERT INTO troubleshooting_flows (id, name, description, category, steps, status, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)",
+        (flow_id, body.name, body.description, body.category, steps_json, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_troubleshooting_flow",
+        resource=flow_id,
+    )
+
+    record = TroubleshootingFlowRecord(
+        id=flow_id,
+        name=body.name,
+        description=body.description,
+        category=body.category,
+        steps=body.steps,
+        status="active",
+        created_at=datetime.fromisoformat(now),
+    )
+    return TroubleshootingFlowResponse(flow=record)
+
+
+@app.get(
+    "/troubleshooting/flows",
+    response_model=TroubleshootingFlowListResponse,
+    tags=["Troubleshooting Flows"],
+)
+async def list_troubleshooting_flows(
+    api_key: str = Depends(require_viewer),
+) -> TroubleshootingFlowListResponse:
+    """List all troubleshooting flows."""
+    if not settings.troubleshooting_flows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Troubleshooting flows are not enabled. Set TROUBLESHOOTING_FLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT id, name, description, category, steps, status, created_at, updated_at FROM troubleshooting_flows ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    flows = []
+    for r in rows:
+        steps = [TroubleshootingStep(**s) for s in _json.loads(r[4])] if r[4] else []
+        flows.append(TroubleshootingFlowRecord(
+            id=r[0],
+            name=r[1],
+            description=r[2] or "",
+            category=r[3] or "general",
+            steps=steps,
+            status=r[5] or "active",
+            created_at=datetime.fromisoformat(r[6]),
+            updated_at=datetime.fromisoformat(r[7]) if r[7] else None,
+        ))
+
+    return TroubleshootingFlowListResponse(flows=flows, total=len(flows))
+
+
+@app.delete(
+    "/troubleshooting/flows/{flow_id}",
+    response_model=TroubleshootingFlowResponse,
+    tags=["Troubleshooting Flows"],
+)
+async def delete_troubleshooting_flow(
+    flow_id: str,
+    api_key: str = Depends(require_admin),
+) -> TroubleshootingFlowResponse:
+    """Delete a troubleshooting flow."""
+    if not settings.troubleshooting_flows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Troubleshooting flows are not enabled. Set TROUBLESHOOTING_FLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT id, name, description, category, steps, status, created_at, updated_at FROM troubleshooting_flows WHERE id = ?",
+        (flow_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Troubleshooting flow {flow_id} not found")
+
+    steps = [TroubleshootingStep(**s) for s in _json.loads(row[4])] if row[4] else []
+    record = TroubleshootingFlowRecord(
+        id=row[0],
+        name=row[1],
+        description=row[2] or "",
+        category=row[3] or "general",
+        steps=steps,
+        status=row[5] or "active",
+        created_at=datetime.fromisoformat(row[6]),
+        updated_at=datetime.fromisoformat(row[7]) if row[7] else None,
+    )
+
+    await _db.execute("DELETE FROM troubleshooting_flows WHERE id = ?", (flow_id,))
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="delete_troubleshooting_flow",
+        resource=flow_id,
+    )
+
+    return TroubleshootingFlowResponse(flow=record)
+
+
+@app.post(
+    "/troubleshooting/execute",
+    response_model=TroubleshootingExecuteResponse,
+    tags=["Troubleshooting Flows"],
+)
+async def execute_troubleshooting_step(
+    body: TroubleshootingExecuteRequest,
+    api_key: str = Depends(require_viewer),
+) -> TroubleshootingExecuteResponse:
+    """Execute a step in a troubleshooting flow (navigate decision tree)."""
+    if not settings.troubleshooting_flows_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Troubleshooting flows are not enabled. Set TROUBLESHOOTING_FLOWS_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT steps FROM troubleshooting_flows WHERE id = ?",
+        (body.flow_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Troubleshooting flow {body.flow_id} not found")
+
+    steps_data = _json.loads(row[0]) if row[0] else []
+    if not steps_data:
+        return TroubleshootingExecuteResponse(flow_id=body.flow_id, is_complete=True)
+
+    steps = [TroubleshootingStep(**s) for s in steps_data]
+    steps_by_id = {s.id: s for s in steps}
+
+    # If no current step, start from the first step
+    if body.current_step_id is None:
+        current = steps[0]
+    else:
+        current = steps_by_id.get(body.current_step_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail=f"Step {body.current_step_id} not found in flow")
+
+        # Navigate based on step type
+        if current.step_type == TroubleshootingStepType.branch and body.selected_option:
+            # Find the next step based on selected option
+            next_id = None
+            for opt in current.options:
+                if opt.get("label") == body.selected_option:
+                    next_id = opt.get("next_step_id")
+                    break
+            if next_id and next_id in steps_by_id:
+                current = steps_by_id[next_id]
+            else:
+                return TroubleshootingExecuteResponse(
+                    flow_id=body.flow_id,
+                    is_complete=True,
+                    resolution="Flow completed — no matching option found.",
+                )
+        elif current.next_step_id and current.next_step_id in steps_by_id:
+            current = steps_by_id[current.next_step_id]
+        else:
+            # No next step — flow is complete
+            return TroubleshootingExecuteResponse(
+                flow_id=body.flow_id,
+                is_complete=True,
+                resolution=current.content if current.step_type == TroubleshootingStepType.resolution else "Flow completed.",
+            )
+
+    # Check if current step is a resolution
+    if current.step_type == TroubleshootingStepType.resolution:
+        return TroubleshootingExecuteResponse(
+            flow_id=body.flow_id,
+            current_step=current,
+            is_complete=True,
+            resolution=current.content,
+        )
+
+    return TroubleshootingExecuteResponse(
+        flow_id=body.flow_id,
+        current_step=current,
+    )
+
+
+# 52. Intent Detection & Entity Extraction
+
+# Built-in intent patterns for rule-based detection
+_INTENT_PATTERNS: dict[str, list[str]] = {
+    "password_reset": ["password", "reset password", "forgot password", "can't log in", "locked out", "change password"],
+    "access_request": ["access", "permission", "grant access", "need access", "request access", "authorisation"],
+    "bug_report": ["bug", "error", "crash", "broken", "not working", "defect", "issue", "failure"],
+    "feature_request": ["feature", "enhancement", "would be nice", "suggestion", "wish", "request feature"],
+    "billing_inquiry": ["bill", "invoice", "charge", "payment", "subscription", "pricing", "refund"],
+    "general_inquiry": ["how to", "help", "question", "information", "what is", "where is"],
+    "hardware_issue": ["hardware", "printer", "monitor", "keyboard", "mouse", "laptop", "desktop", "device"],
+    "software_installation": ["install", "setup", "configure", "download", "update", "upgrade", "deployment"],
+    "network_issue": ["network", "wifi", "internet", "vpn", "connectivity", "dns", "firewall"],
+    "account_management": ["account", "profile", "settings", "deactivate", "create account", "delete account"],
+}
+
+# Built-in entity extraction patterns
+_ENTITY_PATTERNS: dict[str, str] = {
+    "email": r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+    "error_code": r"(?:error|err|code|status)\s*[:\-#]?\s*([A-Z0-9\-]{2,12})",
+    "ip_address": r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+    "application": r"(?:in|using|with|for|app|application|software|system)\s+([A-Z][a-zA-Z0-9\-_.]+)",
+    "device": r"(?:on|device|machine|laptop|desktop|server|printer)\s+([A-Za-z0-9\-_.]+)",
+    "user": r"(?:user|employee|staff|person|name)\s*[:\-]?\s*([A-Za-z]+(?:\s+[A-Za-z]+)?)",
+    "location": r"(?:office|building|floor|room|site|location|branch)\s*[:\-]?\s*([A-Za-z0-9\s\-]+?)(?:\s*[,.]|\s+(?:and|or|but|is|has)|\s*$)",
+}
+
+
+@app.post(
+    "/intent/detect",
+    response_model=IntentDetectionResponse,
+    tags=["Intent Detection"],
+)
+async def detect_intent(
+    body: IntentDetectionRequest,
+    api_key: str = Depends(require_viewer),
+) -> IntentDetectionResponse:
+    """Detect intent from text using rule-based pattern matching."""
+    if not settings.intent_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Intent detection is not enabled. Set INTENT_DETECTION_ENABLED=true.",
+        )
+
+    import re as _re
+
+    text_lower = body.text.lower()
+    scored_intents: list[IntentResult] = []
+
+    for intent_name, patterns in _INTENT_PATTERNS.items():
+        matches = sum(1 for p in patterns if p in text_lower)
+        if matches > 0:
+            confidence = min(round(matches / len(patterns), 2), 1.0)
+            scored_intents.append(IntentResult(
+                intent=intent_name,
+                confidence=confidence,
+            ))
+
+    scored_intents.sort(key=lambda x: x.confidence, reverse=True)
+
+    if not scored_intents:
+        primary = IntentResult(intent="unknown", confidence=0.0)
+    else:
+        primary = scored_intents[0]
+
+    return IntentDetectionResponse(
+        text=body.text,
+        primary_intent=primary,
+        all_intents=scored_intents,
+    )
+
+
+@app.post(
+    "/entities/extract",
+    response_model=EntityExtractionResponse,
+    tags=["Intent Detection"],
+)
+async def extract_entities(
+    body: EntityExtractionRequest,
+    api_key: str = Depends(require_viewer),
+) -> EntityExtractionResponse:
+    """Extract structured entities from text using pattern matching."""
+    if not settings.intent_detection_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Intent detection is not enabled. Set INTENT_DETECTION_ENABLED=true.",
+        )
+
+    import re as _re
+
+    entities: list[ExtractedEntity] = []
+
+    for etype in body.entity_types:
+        pattern = _ENTITY_PATTERNS.get(etype)
+        if not pattern:
+            continue
+        for m in _re.finditer(pattern, body.text, _re.IGNORECASE):
+            value = m.group(1) if m.lastindex and m.lastindex >= 1 else m.group(0)
+            entities.append(ExtractedEntity(
+                entity_type=etype,
+                value=value.strip(),
+                confidence=0.85,
+                start_pos=m.start(),
+                end_pos=m.end(),
+            ))
+
+    return EntityExtractionResponse(
+        text=body.text,
+        entities=entities,
+        entity_count=len(entities),
+    )
+
+
+# ── Phase 11b: Predictive Intelligence ─────────────────────────────────────────
+
+
+# 53. Resolution Time Prediction
+
+
+@app.get(
+    "/analytics/resolution-prediction/{ticket_id}",
+    response_model=ResolutionPredictionResponse,
+    tags=["Predictive Intelligence"],
+)
+async def predict_resolution_time(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> ResolutionPredictionResponse:
+    """Predict resolution time for a ticket based on historical patterns."""
+    if not settings.resolution_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Resolution prediction is not enabled. Set RESOLUTION_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Fetch ticket details
+    async with _db.execute(
+        "SELECT category, priority, ticket_status FROM processed_tickets WHERE id = ?",
+        (ticket_id,),
+    ) as cursor:
+        ticket_row = await cursor.fetchone()
+
+    if not ticket_row:
+        raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+    category = ticket_row[0] or "unknown"
+    priority = ticket_row[1] or "medium"
+    ticket_status = ticket_row[2] or "open"
+
+    # Calculate historical averages
+    async with _db.execute(
+        "SELECT AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE category = ? AND ticket_status = 'resolved'",
+        (category,),
+    ) as cursor:
+        cat_avg_row = await cursor.fetchone()
+
+    cat_avg = cat_avg_row[0] if cat_avg_row and cat_avg_row[0] else 24.0
+
+    # Build prediction factors
+    factors = []
+    base_hours = cat_avg
+
+    # Priority factor
+    priority_multipliers = {"critical": 0.5, "high": 0.75, "medium": 1.0, "low": 1.5}
+    p_mult = priority_multipliers.get(priority, 1.0)
+    if p_mult < 1.0:
+        factors.append(ResolutionFactor(factor=f"Priority: {priority}", impact="decreases", weight=round(1.0 - p_mult, 2)))
+    elif p_mult > 1.0:
+        factors.append(ResolutionFactor(factor=f"Priority: {priority}", impact="increases", weight=round(p_mult - 1.0, 2)))
+
+    # Category factor
+    factors.append(ResolutionFactor(
+        factor=f"Category: {category}",
+        impact="increases" if cat_avg > 24 else "decreases",
+        weight=round(abs(cat_avg - 24) / 24, 2),
+    ))
+
+    predicted_hours = round(base_hours * p_mult, 1)
+    confidence = 0.72 if cat_avg_row and cat_avg_row[0] else 0.45
+
+    now = datetime.now(tz=timezone.utc)
+    prediction = ResolutionPrediction(
+        ticket_id=ticket_id,
+        predicted_hours=predicted_hours,
+        confidence=confidence,
+        factors=factors,
+        predicted_at=now,
+    )
+
+    return ResolutionPredictionResponse(prediction=prediction)
+
+
+@app.get(
+    "/analytics/resolution-stats",
+    response_model=ResolutionStatsResponse,
+    tags=["Predictive Intelligence"],
+)
+async def get_resolution_stats(
+    api_key: str = Depends(require_viewer),
+) -> ResolutionStatsResponse:
+    """Get historical resolution time statistics."""
+    if not settings.resolution_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Resolution prediction is not enabled. Set RESOLUTION_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Overall stats
+    async with _db.execute(
+        "SELECT COUNT(*) FROM processed_tickets WHERE ticket_status = 'resolved'"
+    ) as cursor:
+        total_row = await cursor.fetchone()
+    total_resolved = total_row[0] if total_row else 0
+
+    # Average resolution hours by category
+    by_category: dict[str, float] = {}
+    async with _db.execute(
+        "SELECT category, AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY category"
+    ) as cursor:
+        cat_rows = await cursor.fetchall()
+    for r in cat_rows:
+        if r[0] and r[1]:
+            by_category[r[0]] = round(r[1], 1)
+
+    # Average resolution hours by priority
+    by_priority: dict[str, float] = {}
+    async with _db.execute(
+        "SELECT priority, AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE ticket_status = 'resolved' GROUP BY priority"
+    ) as cursor:
+        pri_rows = await cursor.fetchall()
+    for r in pri_rows:
+        if r[0] and r[1]:
+            by_priority[r[0]] = round(r[1], 1)
+
+    avg_h = sum(by_category.values()) / len(by_category) if by_category else 0.0
+
+    # Heuristic approximations — a full implementation would compute
+    # true percentiles from the individual resolution-time distribution.
+    return ResolutionStatsResponse(
+        avg_resolution_hours=round(avg_h, 1),
+        median_resolution_hours=round(avg_h * 0.85, 1),
+        p95_resolution_hours=round(avg_h * 2.5, 1),
+        total_resolved=total_resolved,
+        by_category=by_category,
+        by_priority=by_priority,
+    )
+
+
+# 54. Satisfaction Prediction
+
+
+@app.get(
+    "/analytics/satisfaction-prediction/{ticket_id}",
+    response_model=SatisfactionPredictionResponse,
+    tags=["Predictive Intelligence"],
+)
+async def predict_satisfaction(
+    ticket_id: str,
+    api_key: str = Depends(require_viewer),
+) -> SatisfactionPredictionResponse:
+    """Predict customer satisfaction for a ticket."""
+    if not settings.satisfaction_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Satisfaction prediction is not enabled. Set SATISFACTION_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Fetch ticket details
+    async with _db.execute(
+        "SELECT category, priority, ticket_status, sentiment FROM processed_tickets WHERE id = ?",
+        (ticket_id,),
+    ) as cursor:
+        ticket_row = await cursor.fetchone()
+
+    if not ticket_row:
+        raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+    category = ticket_row[0] or "unknown"
+    priority = ticket_row[1] or "medium"
+    ticket_status = ticket_row[2] or "open"
+    sentiment = ticket_row[3] or "neutral"
+
+    # Build prediction based on heuristics
+    base_score = 3.5
+    factors = []
+
+    # Sentiment factor
+    sentiment_impacts = {"positive": 0.8, "neutral": 0.0, "negative": -0.8, "frustrated": -1.2}
+    s_impact = sentiment_impacts.get(sentiment, 0.0)
+    if s_impact != 0:
+        factors.append(SatisfactionFactor(
+            factor=f"Sentiment: {sentiment}",
+            impact="positive" if s_impact > 0 else "negative",
+            weight=round(abs(s_impact), 2),
+        ))
+    base_score += s_impact
+
+    # Status factor
+    if ticket_status == "resolved":
+        factors.append(SatisfactionFactor(factor="Status: resolved", impact="positive", weight=0.5))
+        base_score += 0.5
+    elif ticket_status in ("escalated", "breached"):
+        factors.append(SatisfactionFactor(factor=f"Status: {ticket_status}", impact="negative", weight=0.7))
+        base_score -= 0.7
+
+    # Priority factor
+    if priority in ("critical", "high"):
+        factors.append(SatisfactionFactor(factor=f"Priority: {priority}", impact="negative", weight=0.3))
+        base_score -= 0.3
+
+    predicted_score = max(1.0, min(5.0, round(base_score, 1)))
+
+    risk_level = "low"
+    if predicted_score < 2.5:
+        risk_level = "high"
+    elif predicted_score < 3.5:
+        risk_level = "medium"
+
+    now = datetime.now(tz=timezone.utc)
+    prediction = SatisfactionPrediction(
+        ticket_id=ticket_id,
+        predicted_score=predicted_score,
+        confidence=0.68,
+        risk_level=risk_level,
+        factors=factors,
+        predicted_at=now,
+    )
+
+    return SatisfactionPredictionResponse(prediction=prediction)
+
+
+@app.get(
+    "/analytics/satisfaction-trends",
+    response_model=SatisfactionTrendsResponse,
+    tags=["Predictive Intelligence"],
+)
+async def get_satisfaction_trends(
+    api_key: str = Depends(require_viewer),
+) -> SatisfactionTrendsResponse:
+    """Get satisfaction score trends over time."""
+    if not settings.satisfaction_prediction_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Satisfaction prediction is not enabled. Set SATISFACTION_PREDICTION_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    # Query CSAT scores
+    async with _db.execute(
+        "SELECT rating, submitted_at FROM csat_ratings ORDER BY submitted_at DESC LIMIT 100"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    total_ratings = len(rows)
+    if total_ratings == 0:
+        return SatisfactionTrendsResponse()
+
+    scores = [r[0] for r in rows]
+    avg_score = round(sum(scores) / len(scores), 1)
+
+    # Simple trend: compare first and second halves
+    mid = len(scores) // 2
+    if mid > 0:
+        recent_avg = sum(scores[:mid]) / mid
+        older_avg = sum(scores[mid:]) / (len(scores) - mid)
+        if recent_avg > older_avg + 0.2:
+            trend = "improving"
+        elif recent_avg < older_avg - 0.2:
+            trend = "declining"
+        else:
+            trend = "stable"
+    else:
+        trend = "stable"
+
+    return SatisfactionTrendsResponse(
+        avg_score=avg_score,
+        trend_direction=trend,
+        total_ratings=total_ratings,
+    )
+
+
+# ── Phase 11c: Smart Assignment ────────────────────────────────────────────────
+
+
+# 55. Intelligent Agent Assignment
+
+
+@app.post(
+    "/agent-profiles",
+    response_model=AgentProfileResponse,
+    tags=["Smart Assignment"],
+)
+async def create_agent_profile(
+    body: AgentProfileCreate,
+    api_key: str = Depends(require_analyst),
+) -> AgentProfileResponse:
+    """Create or update an agent performance profile."""
+    if not settings.smart_assignment_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Smart assignment is not enabled. Set SMART_ASSIGNMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    specs_json = _json.dumps(body.specialisations)
+
+    await _db.execute(
+        """INSERT INTO agent_profiles (agent_id, name, specialisations, max_capacity, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(agent_id) DO UPDATE SET
+             name=excluded.name,
+             specialisations=excluded.specialisations,
+             max_capacity=excluded.max_capacity,
+             updated_at=excluded.updated_at""",
+        (body.agent_id, body.name, specs_json, body.max_capacity, now, now),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="create_agent_profile",
+        resource=body.agent_id,
+    )
+
+    profile = AgentPerformanceProfile(
+        agent_id=body.agent_id,
+        name=body.name,
+        specialisations=body.specialisations,
+        max_capacity=body.max_capacity,
+    )
+    return AgentProfileResponse(profile=profile)
+
+
+@app.get(
+    "/agent-profiles",
+    response_model=AgentProfileListResponse,
+    tags=["Smart Assignment"],
+)
+async def list_agent_profiles(
+    api_key: str = Depends(require_viewer),
+) -> AgentProfileListResponse:
+    """List all agent performance profiles."""
+    if not settings.smart_assignment_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Smart assignment is not enabled. Set SMART_ASSIGNMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT agent_id, name, specialisations, max_capacity, current_load, avg_resolution_hours, avg_satisfaction, categories FROM agent_profiles"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    profiles = []
+    for r in rows:
+        profiles.append(AgentPerformanceProfile(
+            agent_id=r[0],
+            name=r[1] or "",
+            specialisations=_json.loads(r[2]) if r[2] else [],
+            max_capacity=r[3] or 10,
+            current_load=r[4] or 0,
+            avg_resolution_hours=r[5] or 0.0,
+            avg_satisfaction=r[6] or 0.0,
+            categories=_json.loads(r[7]) if r[7] else {},
+        ))
+
+    return AgentProfileListResponse(profiles=profiles, total=len(profiles))
+
+
+@app.post(
+    "/tickets/{ticket_id}/smart-assign",
+    response_model=SmartAssignmentResponse,
+    tags=["Smart Assignment"],
+)
+async def smart_assign_ticket(
+    ticket_id: str,
+    api_key: str = Depends(require_analyst),
+) -> SmartAssignmentResponse:
+    """Intelligently assign a ticket to the best available agent."""
+    if not settings.smart_assignment_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Smart assignment is not enabled. Set SMART_ASSIGNMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    # Fetch ticket details
+    async with _db.execute(
+        "SELECT category, priority FROM processed_tickets WHERE id = ?",
+        (ticket_id,),
+    ) as cursor:
+        ticket_row = await cursor.fetchone()
+
+    if not ticket_row:
+        raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+    category = ticket_row[0] or "general"
+    priority = ticket_row[1] or "medium"
+
+    # Fetch available agents
+    async with _db.execute(
+        "SELECT agent_id, name, specialisations, max_capacity, current_load, avg_resolution_hours, avg_satisfaction, categories FROM agent_profiles WHERE current_load < max_capacity"
+    ) as cursor:
+        agent_rows = await cursor.fetchall()
+
+    if not agent_rows:
+        raise HTTPException(status_code=404, detail="No available agents for assignment")
+
+    # Score each agent
+    best_agent = None
+    best_score = -1.0
+    best_reasons: list[str] = []
+
+    for r in agent_rows:
+        agent_id = r[0]
+        name = r[1] or ""
+        specs = _json.loads(r[2]) if r[2] else []
+        max_cap = r[3] or 10
+        load = r[4] or 0
+        avg_res = r[5] or 0.0
+        avg_sat = r[6] or 0.0
+        cats = _json.loads(r[7]) if r[7] else {}
+
+        score = 0.0
+        reasons = []
+
+        # Specialisation match
+        if category.lower() in [s.lower() for s in specs]:
+            score += 3.0
+            reasons.append(f"Specialises in {category}")
+
+        # Category performance
+        cat_score = cats.get(category, 0.0)
+        if cat_score > 0:
+            score += cat_score
+            reasons.append(f"Category performance: {cat_score:.1f}")
+
+        # Capacity availability
+        capacity_ratio = 1.0 - (load / max_cap) if max_cap > 0 else 0.0
+        score += capacity_ratio * 2.0
+        reasons.append(f"Capacity: {load}/{max_cap}")
+
+        # Satisfaction history
+        if avg_sat > 0:
+            score += avg_sat / 5.0
+            reasons.append(f"Avg satisfaction: {avg_sat:.1f}")
+
+        # Resolution speed
+        if avg_res > 0 and avg_res < 24:
+            score += (24 - avg_res) / 24
+            reasons.append(f"Avg resolution: {avg_res:.1f}h")
+
+        if score > best_score:
+            best_score = score
+            best_agent = (agent_id, name)
+            best_reasons = reasons
+
+    assert best_agent is not None
+
+    # Update agent load
+    await _db.execute(
+        "UPDATE agent_profiles SET current_load = current_load + 1 WHERE agent_id = ?",
+        (best_agent[0],),
+    )
+    await _db.commit()
+
+    await audit.record(
+        _db,
+        api_key=api_key,
+        role=_resolve_role(api_key),
+        action="smart_assign_ticket",
+        resource=ticket_id,
+    )
+
+    result = SmartAssignmentResult(
+        ticket_id=ticket_id,
+        recommended_agent_id=best_agent[0],
+        agent_name=best_agent[1],
+        score=round(best_score, 2),
+        reasons=best_reasons,
+    )
+    return SmartAssignmentResponse(assignment=result)
+
+
+@app.get(
+    "/analytics/agent-performance-matrix",
+    response_model=AgentPerformanceMatrixResponse,
+    tags=["Smart Assignment"],
+)
+async def get_agent_performance_matrix(
+    api_key: str = Depends(require_viewer),
+) -> AgentPerformanceMatrixResponse:
+    """Get agent performance matrix across all categories."""
+    if not settings.smart_assignment_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Smart assignment is not enabled. Set SMART_ASSIGNMENT_ENABLED=true.",
+        )
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    assert _db is not None
+
+    import json as _json
+
+    async with _db.execute(
+        "SELECT agent_id, name, specialisations, max_capacity, current_load, avg_resolution_hours, avg_satisfaction, categories FROM agent_profiles"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    profiles = []
+    all_categories: set[str] = set()
+    for r in rows:
+        cats = _json.loads(r[7]) if r[7] else {}
+        all_categories.update(cats.keys())
+        profiles.append(AgentPerformanceProfile(
+            agent_id=r[0],
+            name=r[1] or "",
+            specialisations=_json.loads(r[2]) if r[2] else [],
+            max_capacity=r[3] or 10,
+            current_load=r[4] or 0,
+            avg_resolution_hours=r[5] or 0.0,
+            avg_satisfaction=r[6] or 0.0,
+            categories=cats,
+        ))
+
+    return AgentPerformanceMatrixResponse(
+        agents=profiles,
+        categories=sorted(all_categories),
     )
 
 

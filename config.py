@@ -439,6 +439,36 @@ class Settings(BaseSettings):
         description="Enable UX preferences & onboarding (GET/PUT /preferences, GET /onboarding/status, POST /onboarding/complete-step)",
     )
 
+    # ── Phase 11a: Conversational intelligence ─────────────────────────────
+    troubleshooting_flows_enabled: bool = Field(
+        default=False,
+        description="Enable multi-step troubleshooting flows (POST/GET/DELETE /troubleshooting/flows, POST /troubleshooting/execute)",
+    )
+
+    # ── Phase 11a: Intent detection ──────────────────────────────────────────
+    intent_detection_enabled: bool = Field(
+        default=False,
+        description="Enable intent detection & entity extraction (POST /intent/detect, POST /entities/extract)",
+    )
+
+    # ── Phase 11b: Resolution prediction ─────────────────────────────────────
+    resolution_prediction_enabled: bool = Field(
+        default=False,
+        description="Enable resolution time prediction (GET /analytics/resolution-prediction, GET /analytics/resolution-stats)",
+    )
+
+    # ── Phase 11b: Satisfaction prediction ───────────────────────────────────
+    satisfaction_prediction_enabled: bool = Field(
+        default=False,
+        description="Enable satisfaction prediction (GET /analytics/satisfaction-prediction, GET /analytics/satisfaction-trends)",
+    )
+
+    # ── Phase 11c: Smart assignment ──────────────────────────────────────────
+    smart_assignment_enabled: bool = Field(
+        default=False,
+        description="Enable intelligent agent assignment (POST /tickets/{id}/smart-assign, POST/GET /agent-profiles, GET /analytics/agent-performance-matrix)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
