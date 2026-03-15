@@ -179,10 +179,14 @@ TicketForge/
 
 ## Setup & run
 
+> **Full guide:** See **[docs/RUNNING_LOCALLY.md](docs/RUNNING_LOCALLY.md)** for
+> detailed instructions including **Windows (PowerShell)** examples,
+> GPU setup, and troubleshooting tips.
+
 ### Prerequisites
 
-* Docker ≥ 24 and Docker Compose v2
-* ~4 GB RAM free for the 8B quantized model
+* [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows / macOS) or Docker Engine + Compose plugin (Linux)
+* ~4 GB RAM free for the 8B quantised model
 * (Optional) NVIDIA GPU — uncomment the `deploy` section in `docker-compose.yml`
 
 ### 1 · Clone and configure
@@ -190,32 +194,58 @@ TicketForge/
 ```bash
 git clone https://github.com/araduti/TicketForge.git
 cd TicketForge
+```
 
-# Create an env file — at minimum set a real API key
+Create a `.env` file — at minimum set a real API key:
+
+**macOS / Linux**
+
+```bash
 cat > .env <<'EOF'
 API_KEYS=my-super-secret-key
 OLLAMA_MODEL=llama3.1:8b
-# ServiceNow, Jira, Zendesk credentials go here (optional)
 EOF
+```
+
+**Windows (PowerShell)**
+
+```powershell
+@"
+API_KEYS=my-super-secret-key
+OLLAMA_MODEL=llama3.1:8b
+"@ | Out-File -Encoding utf8 .env
 ```
 
 ### 2 · Start the stack
 
-```bash
+```
 docker compose up -d
 ```
 
 ### 3 · Pull the LLM model (first run only, ~4.5 GB download)
 
-```bash
+```
 docker compose exec ollama ollama pull llama3.1:8b
 ```
 
 ### 4 · Verify health
 
+**macOS / Linux**
+
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","ollama_reachable":true,"db_ok":true,"version":"0.1.0"}
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Invoke-RestMethod http://localhost:8000/health
+```
+
+Expected response:
+
+```json
+{"status": "ok", "ollama_reachable": true, "db_ok": true, "version": "0.1.0"}
 ```
 
 ---
