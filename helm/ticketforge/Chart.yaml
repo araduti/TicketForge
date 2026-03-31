@@ -1,0 +1,8 @@
+apiVersion: v2
+name: ticketforge
+description: AI-powered ticket enrichment platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+maintainers:
+  - name: TicketForge Team

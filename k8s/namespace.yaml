@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ticketforge
+  labels:
+    app.kubernetes.io/name: ticketforge
+    app.kubernetes.io/part-of: ticketforge
