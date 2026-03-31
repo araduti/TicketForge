@@ -782,6 +782,11 @@ except ImportError:
     log.info("graphql.not_available", detail="pip install strawberry-graphql[fastapi]")
 
 
+# ── Modular route modules (B5) ───────────────────────────────────────────────
+from routes.ops import router as ops_router  # noqa: E402, PLC0415
+app.include_router(ops_router, prefix="/v1", tags=["v1"])
+
+
 # ── API key hashing helpers (A1) ──────────────────────────────────────────────
 def _hash_api_key(api_key: str) -> str:
     """Create a SHA-256 hash of an API key for storage and comparison."""
