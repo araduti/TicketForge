@@ -5,8 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import secrets
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import structlog

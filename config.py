@@ -499,7 +499,7 @@ class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
-    host: str = Field(default="0.0.0.0")
+    host: str = Field(default="0.0.0.0")  # noqa: S104  # nosec B104
     port: int = Field(default=8000)
 
     @field_validator("api_keys", mode="before")

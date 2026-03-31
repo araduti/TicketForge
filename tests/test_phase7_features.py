@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -28,22 +27,6 @@ os.environ["TICKET_TAGS_ENABLED"] = "true"
 os.environ["SAVED_FILTERS_ENABLED"] = "true"
 
 from main import app, lifespan  # noqa: E402
-from models import (  # noqa: E402
-    CustomFieldListResponse,
-    CustomFieldRecord,
-    CustomFieldResponse,
-    CustomFieldType,
-    MergedTicketRecord,
-    ReportFrequency,
-    SavedFilterListResponse,
-    SavedFilterRecord,
-    SavedFilterResponse,
-    ScheduledReportListResponse,
-    ScheduledReportRecord,
-    ScheduledReportResponse,
-    TicketMergeResponse,
-    TicketTagsResponse,
-)
 
 DB_PATH = "./test_ticketforge_phase7.db"
 

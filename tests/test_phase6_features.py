@@ -5,11 +5,8 @@ Tests for AI-Powered Auto-Resolution, Outbound Webhook Events
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -41,7 +38,6 @@ os.environ["OPSGENIE_AUTO_ESCALATE"] = "false"
 
 from main import app, lifespan  # noqa: E402
 from models import (  # noqa: E402
-    AutoResolveResponse,
     AutoResolveResult,
     EscalationResult,
     EscalationStatusResponse,

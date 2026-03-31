@@ -5,12 +5,9 @@ and PostgreSQL asyncpg driver integration.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-from datetime import datetime, timezone
 
-import numpy as np
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -33,10 +30,6 @@ os.environ["MULTI_AGENT_ENABLED"] = "false"
 os.environ["VECTOR_STORE_BACKEND"] = "in_memory"
 
 from main import app, lifespan  # noqa: E402
-from models import (  # noqa: E402
-    MultiAgentStatusResponse,
-    VectorStoreStatusResponse,
-)
 
 
 @pytest_asyncio.fixture

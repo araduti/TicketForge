@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -25,28 +24,6 @@ os.environ["ANOMALY_DETECTION_ENABLED"] = "true"
 os.environ["KB_AUTO_GENERATION_ENABLED"] = "true"
 
 from main import app, lifespan  # noqa: E402
-from models import (  # noqa: E402
-    AnomalyDetectionResponse,
-    AnomalyRuleCreate,
-    AnomalyRuleListResponse,
-    AnomalyRuleRecord,
-    AnomalyRuleResponse,
-    ClassifyRequest,
-    ClassifyResponse,
-    CustomClassifierCreate,
-    CustomClassifierListResponse,
-    CustomClassifierRecord,
-    CustomClassifierResponse,
-    DetectedAnomaly,
-    GeneratedKBArticle,
-    KBAutoGenerateRequest,
-    KBAutoGenerateResponse,
-    KBAutoGenerateSuggestionsResponse,
-    KBSuggestion,
-    TrainClassifierRequest,
-    TrainClassifierResponse,
-    TrainingSample,
-)
 
 DB_PATH = "./test_ticketforge_phase10b.db"
 

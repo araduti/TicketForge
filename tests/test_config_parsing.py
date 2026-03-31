@@ -15,9 +15,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Remove any stale env vars that could interfere."""
+    """Remove any stale env vars that could interfere and restore settings after."""
+    import config as cfg
+
+    original_settings = cfg.settings
     for key in ("API_KEYS", "API_KEY_ROLES"):
         monkeypatch.delenv(key, raising=False)
+    yield
+    # Restore the original settings singleton so subsequent test files are not affected
+    cfg.settings = original_settings
 
 
 def _make_settings(monkeypatch, **env_overrides):

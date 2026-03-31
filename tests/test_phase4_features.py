@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -27,11 +26,10 @@ os.environ["CHATBOT_ENABLED"] = "true"
 os.environ["PORTAL_ENABLED"] = "true"
 os.environ["MONITORING_ENABLED"] = "true"
 
-from main import app, lifespan, ws_manager  # noqa: E402
+from main import app, lifespan  # noqa: E402
 from models import (  # noqa: E402
     CSATAnalyticsResponse,
     CSATRecord,
-    CSATResponse,
     CSATSubmission,
     WebSocketEvent,
 )

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -25,24 +25,6 @@ os.environ["ENHANCED_SLA_PREDICTION_ENABLED"] = "true"
 os.environ["VOLUME_FORECASTING_ENABLED"] = "true"
 
 from main import app, lifespan  # noqa: E402
-from models import (  # noqa: E402
-    CategoryForecast,
-    EnhancedSLAPrediction,
-    EnhancedSLARiskResponse,
-    SLARiskFactor,
-    SLARiskThresholdCreate,
-    SLARiskThresholdListResponse,
-    SLARiskThresholdRecord,
-    SLARiskThresholdResponse,
-    TeamDashboardResponse,
-    TeamMemberCreate,
-    TeamMemberListResponse,
-    TeamMemberRecord,
-    TeamMemberResponse,
-    TeamPerformanceMetrics,
-    VolumeForecastPoint,
-    VolumeForecastResponse,
-)
 
 DB_PATH = "./test_ticketforge_phase10.db"
 

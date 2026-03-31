@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -29,37 +28,6 @@ os.environ["SATISFACTION_PREDICTION_ENABLED"] = "true"
 os.environ["SMART_ASSIGNMENT_ENABLED"] = "true"
 
 from main import app, lifespan
-from models import (
-    AgentPerformanceMatrixResponse,
-    AgentPerformanceProfile,
-    AgentProfileCreate,
-    AgentProfileListResponse,
-    AgentProfileResponse,
-    EntityExtractionRequest,
-    EntityExtractionResponse,
-    ExtractedEntity,
-    IntentDetectionRequest,
-    IntentDetectionResponse,
-    IntentResult,
-    ResolutionFactor,
-    ResolutionPrediction,
-    ResolutionPredictionResponse,
-    ResolutionStatsResponse,
-    SatisfactionFactor,
-    SatisfactionPrediction,
-    SatisfactionPredictionResponse,
-    SatisfactionTrendsResponse,
-    SmartAssignmentResponse,
-    SmartAssignmentResult,
-    TroubleshootingExecuteRequest,
-    TroubleshootingExecuteResponse,
-    TroubleshootingFlowCreate,
-    TroubleshootingFlowListResponse,
-    TroubleshootingFlowRecord,
-    TroubleshootingFlowResponse,
-    TroubleshootingStep,
-    TroubleshootingStepType,
-)
 
 DB_PATH = "./test_ticketforge_phase11.db"
 

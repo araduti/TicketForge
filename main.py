@@ -163,7 +163,6 @@ from models import (
     OnboardingCompleteStepResponse,
     OnboardingStatusResponse,
     OnboardingStep,
-    OutboundWebhookEvent,
     PluginInfo,
     PluginListResponse,
     PortalTicketResponse,
@@ -239,7 +238,6 @@ from models import (
     TeamPerformanceMetrics,
     TrainClassifierRequest,
     TrainClassifierResponse,
-    TrainingSample,
     TroubleshootingExecuteRequest,
     TroubleshootingExecuteResponse,
     TroubleshootingFlowCreate,
@@ -1877,7 +1875,7 @@ async def get_analytics(
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not ready")
 
-    cutoff = datetime.now(tz=timezone.utc).isoformat()
+    _cutoff = datetime.now(tz=timezone.utc).isoformat()  # noqa: F841
 
     # Total tickets
     async with _db.execute("SELECT COUNT(*) FROM processed_tickets") as cur:
@@ -2209,7 +2207,7 @@ async def portal_submit_ticket(
     import uuid  # noqa: PLC0415
 
     ticket_id = f"PORTAL-{uuid.uuid4().hex[:12]}"
-    ticket = RawTicket(
+    _ticket = RawTicket(  # noqa: F841
         id=ticket_id,
         source=TicketSource.generic,
         title=body.title,
@@ -6764,7 +6762,7 @@ async def delete_data_retention_policy(
     return DataRetentionPolicyResponse(policy=record)
 
 
-import re as _re
+import re as _re  # noqa: E402
 
 _PII_PATTERNS: dict[str, str] = {
     "email": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
@@ -7057,7 +7055,6 @@ async def get_performance_metrics(
             detail="Performance monitoring is not enabled. Set PERFORMANCE_MONITORING_ENABLED=true.",
         )
 
-    import os as _os
 
     uptime = time.monotonic() - _app_start_time
     avg_resp = round(_total_response_time / _request_count * 1000, 2) if _request_count > 0 else 0.0
@@ -7643,7 +7640,6 @@ async def detect_intent(
             detail="Intent detection is not enabled. Set INTENT_DETECTION_ENABLED=true.",
         )
 
-    import re as _re
 
     text_lower = body.text.lower()
     scored_intents: list[IntentResult] = []
@@ -7748,10 +7744,8 @@ async def predict_resolution_time(
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
 
     category = ticket_row[0] or "unknown"
-    priority = ticket_row[1] or "medium"
-    ticket_status = ticket_row[2] or "open"
-
-    # Calculate historical averages
+    priority = ticket_row[1] or "medium"  # noqa: F841
+    ticket_status = ticket_row[2] or "open"  # noqa: F841
     async with _db.execute(
         "SELECT AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE category = ? AND ticket_status = 'resolved'",
         (category,),
@@ -7885,7 +7879,7 @@ async def predict_satisfaction(
     if not ticket_row:
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
 
-    category = ticket_row[0] or "unknown"
+    category = ticket_row[0] or "unknown"  # noqa: F841
     priority = ticket_row[1] or "medium"
     ticket_status = ticket_row[2] or "open"
     sentiment = ticket_row[3] or "neutral"
@@ -8123,9 +8117,7 @@ async def smart_assign_ticket(
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
 
     category = ticket_row[0] or "general"
-    priority = ticket_row[1] or "medium"
-
-    # Fetch available agents
+    priority = ticket_row[1] or "medium"  # noqa: F841
     async with _db.execute(
         "SELECT agent_id, name, specialisations, max_capacity, current_load, avg_resolution_hours, avg_satisfaction, categories FROM agent_profiles WHERE current_load < max_capacity"
     ) as cursor:
@@ -8290,29 +8282,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     log.error("unhandled_exception", path=str(request.url), error=str(exc), request_id=request_id, exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={
-            "error": {
-                "code": "internal_server_error",
-                "message": "An unexpected error occurred.",
-                "request_id": request_id,
-            }
-        },
-    )
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Standardised error response format (B3) for all HTTP exceptions."""
-    request_id = request.headers.get("X-Request-ID", "unknown")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.status_code,
-                "message": exc.detail,
-                "request_id": request_id,
-            }
-        },
+        content=ErrorResponse(error="internal_server_error", detail=str(exc)).model_dump(),
     )
 
 

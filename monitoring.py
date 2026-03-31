@@ -6,7 +6,6 @@ in category, priority, and sentiment predictions.
 """
 from __future__ import annotations
 
-import math
 from collections import Counter
 
 import structlog
