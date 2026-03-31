@@ -218,10 +218,27 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
 
 
+class ReadinessResponse(BaseModel):
+    status: str
+    checks: dict[str, bool]
+
+
+class ApiKeyRotateResponse(BaseModel):
+    api_key: str
+    key_id: str
+    message: str
+
+
 class ErrorResponse(BaseModel):
     success: bool = False
     error: str
     detail: str = ""
+
+
+class StandardErrorDetail(BaseModel):
+    code: int
+    message: str
+    request_id: str = ""
 
 
 # ── Analytics models ──────────────────────────────────────────────────────────

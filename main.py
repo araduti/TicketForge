@@ -12,7 +12,11 @@ import asyncio
 import csv
 import hashlib
 import hmac
+import html as html_mod
 import io
+import json as json_mod
+import re
+import secrets
 import sqlite3 as _sqlite3
 import time
 import uuid
@@ -22,8 +26,10 @@ from typing import AsyncGenerator
 
 import httpx
 import structlog
+import structlog.contextvars
 import structlog.stdlib
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -58,6 +64,7 @@ from models import (
     AnomalyRuleListResponse,
     AnomalyRuleRecord,
     AnomalyRuleResponse,
+    ApiKeyRotateResponse,
     ApprovalDecision,
     ApprovalListResponse,
     ApprovalRecord,
@@ -174,6 +181,7 @@ from models import (
     PriorityCount,
     PriorityResult,
     RawTicket,
+    ReadinessResponse,
     ResolutionFactor,
     ResolutionPrediction,
     ResolutionPredictionResponse,
@@ -212,6 +220,7 @@ from models import (
     SLAStatus,
     SmartAssignmentResponse,
     SmartAssignmentResult,
+    StandardErrorDetail,
     SuggestedResponse,
     SuggestResponseRequest,
     SuggestResponseResponse,
@@ -299,6 +308,51 @@ _processor: TicketProcessor | None = None
 _detector: AutomationDetector | None = None
 _db: aiosqlite.Connection | None = None
 _vector_store: VectorStore | None = None
+
+# ── API key store (hashed keys for secure comparison) ─────────────────────────
+# Each entry: (sha256_digest_bytes, key_id, Role)
+_api_key_entries: list[tuple[bytes, str, Role]] = []
+
+
+def _init_api_keys() -> None:
+    """Hash all configured API keys at startup for secure storage and comparison."""
+    global _api_key_entries  # noqa: PLW0603
+    _api_key_entries = []
+    for key in settings.api_keys:
+        digest = hashlib.sha256(key.encode()).digest()
+        key_id = digest.hex()[:12]
+        role_str = settings.api_key_roles.get(key, "analyst")
+        try:
+            role = Role(role_str)
+        except ValueError:
+            role = Role.analyst
+        _api_key_entries.append((digest, key_id, role))
+    log.info("api_keys.initialised", count=len(_api_key_entries))
+
+
+# ── Input sanitisation helpers ────────────────────────────────────────────────
+
+_SCRIPT_TAG_RE = re.compile(r"<script[\s>].*?</script>", re.IGNORECASE | re.DOTALL)
+_EVENT_HANDLER_RE = re.compile(r"\bon\w+\s*=", re.IGNORECASE)
+
+
+def _sanitise_string(value: str) -> str:
+    """HTML-escape a string and strip script tags to prevent XSS."""
+    value = _SCRIPT_TAG_RE.sub("", value)
+    value = _EVENT_HANDLER_RE.sub("", value)
+    value = html_mod.escape(value, quote=True)
+    return value
+
+
+def _sanitise_value(obj: object) -> object:
+    """Recursively sanitise string values in dicts/lists."""
+    if isinstance(obj, str):
+        return _sanitise_string(obj)
+    if isinstance(obj, dict):
+        return {k: _sanitise_value(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitise_value(item) for item in obj]
+    return obj
 
 
 # ── WebSocket connection manager ──────────────────────────────────────────────
@@ -638,6 +692,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     log.info("ticketforge.startup", version=APP_VERSION, model=settings.ollama_model)
 
+    # Hash API keys at startup — plain text keys are not retained in the store
+    _init_api_keys()
+
     # Database
     _db = await aiosqlite.connect(settings.database_url.replace("sqlite+aiosqlite:///", ""))
     await _db.executescript(DB_INIT_SQL)
@@ -675,29 +732,112 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Prometheus metrics at /metrics
 Instrumentator().instrument(app).expose(app)
 
+# ── CORS middleware (A5) ──────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Security headers middleware (A7) ──────────────────────────────────────────
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Add Content-Security-Policy and other security headers to every response."""
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "font-src 'self'; frame-ancestors 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+# ── Request ID middleware (A4) ────────────────────────────────────────────────
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Assign a unique request ID to every request and propagate via structlog."""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = request_id
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# ── Input sanitisation middleware (A3) ────────────────────────────────────────
+
+@app.middleware("http")
+async def sanitise_input_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Sanitise string values in JSON request bodies to prevent XSS/injection."""
+    if request.method in ("POST", "PUT", "PATCH") and request.headers.get("content-type", "").startswith("application/json"):
+        body = await request.body()
+        if body:
+            try:
+                data = json_mod.loads(body)
+                sanitised = _sanitise_value(data)
+                sanitised_bytes = json_mod.dumps(sanitised).encode()
+
+                async def receive():  # type: ignore[no-untyped-def]
+                    return {"type": "http.request", "body": sanitised_bytes}
+
+                request = Request(request.scope, receive)
+            except (json_mod.JSONDecodeError, UnicodeDecodeError):
+                pass
+    response = await call_next(request)
+    return response
+
+
+# ── Standardised error handler (B3) ──────────────────────────────────────────
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return standardised error responses with request ID."""
+    request_id = getattr(request.state, "request_id", "") if hasattr(request, "state") else ""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "error": {
+                "code": exc.status_code,
+                "message": exc.detail,
+                "request_id": request_id,
+            },
+        },
+    )
+
 
 # ── Authentication & RBAC dependencies ─────────────────────────────────────────
 
 _ROLE_HIERARCHY: dict[Role, int] = {Role.viewer: 0, Role.analyst: 1, Role.admin: 2}
 
 
-def _resolve_role(api_key: str) -> Role:
-    """Look up the role for an API key, defaulting to analyst."""
-    role_str = settings.api_key_roles.get(api_key, "analyst")
-    try:
-        return Role(role_str)
-    except ValueError:
-        return Role.analyst
+def _resolve_role(key_id: str) -> Role:
+    """Look up the role for a key identifier, defaulting to analyst."""
+    for _digest, kid, role in _api_key_entries:
+        if kid == key_id:
+            return role
+    return Role.analyst
 
 
 async def verify_api_key(x_api_key: str = Header(...)) -> str:
-    """Validate the X-Api-Key header against the configured list."""
-    if x_api_key not in settings.api_keys:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API key",
-        )
-    return x_api_key
+    """Validate the X-Api-Key header using constant-time comparison of hashed keys."""
+    incoming_digest = hashlib.sha256(x_api_key.encode()).digest()
+    for stored_digest, key_id, _role in _api_key_entries:
+        if hmac.compare_digest(incoming_digest, stored_digest):
+            return key_id
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing API key",
+    )
 
 
 def _require_role(minimum: Role):
@@ -781,6 +921,63 @@ async def health_check() -> HealthResponse:
 
     db_ok = _db is not None
     return HealthResponse(status="ok", ollama_reachable=ollama_ok, db_ok=db_ok)
+
+
+@app.get("/ready", response_model=ReadinessResponse, tags=["ops"])
+async def readiness_check() -> JSONResponse:
+    """Readiness probe — checks all critical dependencies before accepting traffic."""
+    checks: dict[str, bool] = {}
+
+    # Database connectivity
+    db_ready = False
+    if _db is not None:
+        try:
+            async with _db.execute("SELECT 1") as cur:
+                await cur.fetchone()
+            db_ready = True
+        except Exception:  # noqa: BLE001
+            pass
+    checks["database"] = db_ready
+
+    # Vector store
+    checks["vector_store"] = _vector_store is not None
+
+    # Ticket processor
+    checks["processor"] = _processor is not None
+
+    all_ready = all(checks.values())
+    resp = ReadinessResponse(
+        status="ready" if all_ready else "not_ready",
+        checks=checks,
+    )
+    return JSONResponse(
+        status_code=200 if all_ready else 503,
+        content=resp.model_dump(),
+    )
+
+
+@app.post("/api-keys/rotate", response_model=ApiKeyRotateResponse, tags=["security"])
+async def rotate_api_key(
+    api_key: str = Depends(require_admin),
+) -> ApiKeyRotateResponse:
+    """
+    Generate a new API key and register it (admin only).
+
+    The new key inherits the 'analyst' role by default.
+    The plain-text key is returned **once** — store it securely.
+    """
+    global _api_key_entries  # noqa: PLW0603
+    new_key = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(new_key.encode()).digest()
+    key_id = digest.hex()[:12]
+    _api_key_entries.append((digest, key_id, Role.analyst))
+
+    log.info("api_key.rotated", new_key_id=key_id, issued_by=api_key)
+    return ApiKeyRotateResponse(
+        api_key=new_key,
+        key_id=key_id,
+        message="Store this key securely — it will not be shown again.",
+    )
 
 
 @app.post(

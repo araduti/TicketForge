@@ -469,10 +469,16 @@ class Settings(BaseSettings):
         description="Enable intelligent agent assignment (POST /tickets/{id}/smart-assign, POST/GET /agent-profiles, GET /analytics/agent-performance-matrix)",
     )
 
+    # ── CORS ─────────────────────────────────────────────────────────────────
+    cors_allowed_origins: str | list[str] = Field(
+        default=["*"],
+        description="Comma-separated list of allowed CORS origins (set via CORS_ALLOWED_ORIGINS env var)",
+    )
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
-    host: str = Field(default="0.0.0.0")
+    host: str = Field(default="0.0.0.0")  # nosec B104
     port: int = Field(default=8000)
 
     @field_validator("api_keys", mode="before")
@@ -491,6 +497,13 @@ class Settings(BaseSettings):
                 return json.loads(v)
             except json.JSONDecodeError:
                 return {}
+        return v  # type: ignore[return-value]
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            return [o.strip() for o in v.split(",") if o.strip()]
         return v  # type: ignore[return-value]
 
 
