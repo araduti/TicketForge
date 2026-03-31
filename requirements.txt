@@ -41,3 +41,27 @@ prometheus-fastapi-instrumentator==7.0.0
 # Utilities
 tenacity==9.0.0
 python-dotenv==1.0.1
+
+# CORS middleware (built into FastAPI - no extra dep needed)
+
+# Input sanitisation
+nh3==0.2.21
+
+# Database migrations
+alembic==1.15.2
+sqlalchemy==2.0.40
+
+# OpenTelemetry distributed tracing
+opentelemetry-api==1.33.0
+opentelemetry-sdk==1.33.0
+opentelemetry-instrumentation-fastapi==0.54b0
+opentelemetry-exporter-otlp==1.33.0
+
+# Error tracking (optional)
+sentry-sdk[fastapi]==2.22.0
+
+# GraphQL
+strawberry-graphql[fastapi]==0.262.5
+
+# Production server
+gunicorn==23.0.0
