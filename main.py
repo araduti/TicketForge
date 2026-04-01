@@ -331,7 +331,7 @@ def _init_api_keys() -> None:
 
 # ── Input sanitisation helpers ────────────────────────────────────────────────
 
-_SCRIPT_TAG_RE = re.compile(r"<script[\s>].*?</script>", re.IGNORECASE | re.DOTALL)
+_SCRIPT_TAG_RE = re.compile(r"<script[\s>].*?</script\s*>", re.IGNORECASE | re.DOTALL)
 _EVENT_HANDLER_RE = re.compile(r"\bon\w+\s*=", re.IGNORECASE)
 
 
