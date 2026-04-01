@@ -124,7 +124,7 @@ class TestApiKeyRotation:
         data = response.json()
         assert "api_key" in data
         assert "key_id" in data
-        assert len(data["api_key"]) > 20  # token_urlsafe(32) is ~43 chars
+        assert len(data["api_key"]) >= 43  # token_urlsafe(32) produces ~43 chars
 
     @pytest.mark.asyncio
     async def test_rotated_key_works(self, client):
@@ -136,11 +136,13 @@ class TestApiKeyRotation:
         )
         new_key = response.json()["api_key"]
 
-        # Use the new key
+        # Use the new key to access a viewer-level endpoint
         response = await client.get(
-            "/health",
+            "/tickets/nonexistent",
+            headers={"X-Api-Key": new_key},
         )
-        assert response.status_code == 200
+        # 404 means authentication succeeded (ticket just doesn't exist)
+        assert response.status_code == 404
 
 
 # ── A3: Input sanitisation ───────────────────────────────────────────────────

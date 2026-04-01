@@ -220,7 +220,6 @@ from models import (
     SLAStatus,
     SmartAssignmentResponse,
     SmartAssignmentResult,
-    StandardErrorDetail,
     SuggestedResponse,
     SuggestResponseRequest,
     SuggestResponseResponse,
@@ -786,10 +785,10 @@ async def sanitise_input_middleware(request: Request, call_next):  # type: ignor
                 sanitised = _sanitise_value(data)
                 sanitised_bytes = json_mod.dumps(sanitised).encode()
 
-                async def receive():  # type: ignore[no-untyped-def]
+                async def sanitised_receive():  # type: ignore[no-untyped-def]
                     return {"type": "http.request", "body": sanitised_bytes}
 
-                request = Request(request.scope, receive)
+                request = Request(request.scope, sanitised_receive)
             except (json_mod.JSONDecodeError, UnicodeDecodeError):
                 pass
     response = await call_next(request)
