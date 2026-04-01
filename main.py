@@ -13,6 +13,7 @@ import csv
 import hashlib
 import hmac
 import io
+import secrets
 import sqlite3 as _sqlite3
 import time
 import uuid
@@ -24,6 +25,7 @@ import httpx
 import structlog
 import structlog.stdlib
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -161,7 +163,6 @@ from models import (
     OnboardingCompleteStepResponse,
     OnboardingStatusResponse,
     OnboardingStep,
-    OutboundWebhookEvent,
     PluginInfo,
     PluginListResponse,
     PortalTicketResponse,
@@ -237,7 +238,6 @@ from models import (
     TeamPerformanceMetrics,
     TrainClassifierRequest,
     TrainClassifierResponse,
-    TrainingSample,
     TroubleshootingExecuteRequest,
     TroubleshootingExecuteResponse,
     TroubleshootingFlowCreate,
@@ -289,7 +289,7 @@ structlog.configure(
 log = structlog.get_logger(__name__)
 
 # ── Application version ───────────────────────────────────────────────────────
-APP_VERSION = "0.1.0"
+APP_VERSION = "1.0.0"
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
@@ -672,8 +672,133 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ── CORS middleware (A5) ──────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=settings.cors_allow_methods,
+    allow_headers=settings.cors_allow_headers,
+)
+
+
+# ── Request ID middleware (A4) ────────────────────────────────────────────────
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Attach a unique request ID to every request and propagate through logs."""
+    if not settings.request_id_enabled:
+        return await call_next(request)
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# ── Content Security Policy headers (A7) ─────────────────────────────────────
+@app.middleware("http")
+async def csp_middleware(request: Request, call_next):
+    """Add Content Security Policy headers for HTML responses."""
+    response = await call_next(request)
+    if settings.csp_enabled:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self'; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+# ── Input sanitisation helper (A3) ────────────────────────────────────────────
+def _sanitise_text(text: str) -> str:
+    """Sanitise user-supplied text by stripping dangerous HTML/script tags."""
+    if not settings.input_sanitisation_enabled:
+        return text
+    try:
+        import nh3  # noqa: PLC0415
+        return nh3.clean(text)
+    except ImportError:
+        import html  # noqa: PLC0415
+        return html.escape(text)
+
+
+# ── Sentry integration (D3) ──────────────────────────────────────────────────
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk  # noqa: PLC0415
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            environment=settings.sentry_environment,
+            release=f"ticketforge@{APP_VERSION}",
+            send_default_pii=False,
+        )
+        log.info("sentry.initialised", environment=settings.sentry_environment)
+    except ImportError:
+        log.warning("sentry.sdk_not_installed", detail="pip install sentry-sdk[fastapi]")
+
+
+# ── OpenTelemetry tracing (D1) ───────────────────────────────────────────────
+if settings.otel_enabled:
+    try:
+        from opentelemetry import trace  # noqa: PLC0415
+        from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
+        from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter  # noqa: PLC0415
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: PLC0415
+
+        resource = Resource.create({"service.name": settings.otel_service_name, "service.version": APP_VERSION})
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_endpoint, insecure=True))
+        )
+        trace.set_tracer_provider(provider)
+        FastAPIInstrumentor.instrument_app(app)
+        log.info("opentelemetry.initialised", endpoint=settings.otel_exporter_endpoint)
+    except ImportError:
+        log.warning("opentelemetry.not_installed", detail="pip install opentelemetry-sdk opentelemetry-instrumentation-fastapi opentelemetry-exporter-otlp")
+
+
 # Prometheus metrics at /metrics
 Instrumentator().instrument(app).expose(app)
+
+# ── GraphQL endpoint (nice-to-have) ──────────────────────────────────────────
+try:
+    from graphql_schema import graphql_app as _graphql_app  # noqa: PLC0415
+    app.include_router(_graphql_app, prefix="/graphql")
+    log.info("graphql.mounted", path="/graphql")
+except ImportError:
+    log.info("graphql.not_available", detail="pip install strawberry-graphql[fastapi]")
+
+
+# ── Modular route modules (B5) ───────────────────────────────────────────────
+from routes.ops import router as ops_router  # noqa: E402, PLC0415
+app.include_router(ops_router, prefix="/v1", tags=["v1"])
+
+
+# ── API key hashing helpers (A1) ──────────────────────────────────────────────
+def _hash_api_key(api_key: str) -> str:
+    """Create a SHA-256 hash of an API key for storage and comparison."""
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def _verify_api_key_secure(provided_key: str, valid_keys: list[str]) -> bool:
+    """Constant-time comparison of API key against valid keys."""
+    provided_hash = _hash_api_key(provided_key)
+    for valid_key in valid_keys:
+        valid_hash = _hash_api_key(valid_key)
+        if secrets.compare_digest(provided_hash, valid_hash):
+            return True
+    return False
 
 
 # ── Authentication & RBAC dependencies ─────────────────────────────────────────
@@ -691,8 +816,8 @@ def _resolve_role(api_key: str) -> Role:
 
 
 async def verify_api_key(x_api_key: str = Header(...)) -> str:
-    """Validate the X-Api-Key header against the configured list."""
-    if x_api_key not in settings.api_keys:
+    """Validate the X-Api-Key header against the configured list using constant-time comparison."""
+    if not _verify_api_key_secure(x_api_key, settings.api_keys):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",
@@ -769,7 +894,7 @@ def compute_sla(priority: Priority, created_at: datetime) -> SLAInfo:
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
 async def health_check() -> HealthResponse:
-    """Liveness / readiness probe."""
+    """Liveness probe — returns ok if the application is running."""
     # Check Ollama reachability
     ollama_ok = False
     try:
@@ -781,6 +906,71 @@ async def health_check() -> HealthResponse:
 
     db_ok = _db is not None
     return HealthResponse(status="ok", ollama_reachable=ollama_ok, db_ok=db_ok)
+
+
+@app.get("/ready", response_model=HealthResponse, tags=["ops"])
+async def readiness_check() -> HealthResponse:
+    """Readiness probe — returns ok only when all critical dependencies are available."""
+    ollama_ok = False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{settings.ollama_base_url}/api/tags")
+            ollama_ok = r.status_code == 200
+    except Exception:  # noqa: BLE001
+        pass
+
+    db_ok = _db is not None
+    processor_ok = _processor is not None
+
+    all_ok = db_ok and processor_ok
+    resp = HealthResponse(status="ok" if all_ok else "degraded", ollama_reachable=ollama_ok, db_ok=db_ok)
+    if not all_ok:
+        resp.status = "degraded"
+    return resp
+
+
+# ── API key rotation endpoint (A2) ───────────────────────────────────────────
+
+@app.post("/api-keys/rotate", tags=["security"])
+async def rotate_api_key(
+    request: Request,
+    api_key: str = Depends(require_admin),
+) -> JSONResponse:
+    """
+    Rotate an API key: generates a new key and invalidates the caller's current key.
+    Only admins can rotate keys. Returns the new key (shown only once).
+    """
+    new_key = secrets.token_urlsafe(32)
+
+    # Replace the caller's key in the settings
+    current_keys = list(settings.api_keys)
+    if api_key in current_keys:
+        idx = current_keys.index(api_key)
+        current_keys[idx] = new_key
+    else:
+        current_keys.append(new_key)
+
+    # Migrate role from old key to new key
+    old_role = settings.api_key_roles.get(api_key, "admin")
+    new_roles = dict(settings.api_key_roles)
+    new_roles.pop(api_key, None)
+    new_roles[new_key] = old_role
+
+    settings.api_keys = current_keys
+    settings.api_key_roles = new_roles
+
+    log.info("api_key.rotated", old_key_hash=_hash_api_key(api_key), new_key_hash=_hash_api_key(new_key))
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "API key rotated successfully",
+            "new_api_key": new_key,
+            "old_key_hash": _hash_api_key(api_key),
+            "new_key_hash": _hash_api_key(new_key),
+            "note": "Store the new key securely. It will not be shown again.",
+        },
+    )
 
 
 @app.post(
@@ -1685,7 +1875,7 @@ async def get_analytics(
     if _db is None:
         raise HTTPException(status_code=503, detail="Database not ready")
 
-    cutoff = datetime.now(tz=timezone.utc).isoformat()
+    _cutoff = datetime.now(tz=timezone.utc).isoformat()  # noqa: F841
 
     # Total tickets
     async with _db.execute("SELECT COUNT(*) FROM processed_tickets") as cur:
@@ -2017,7 +2207,7 @@ async def portal_submit_ticket(
     import uuid  # noqa: PLC0415
 
     ticket_id = f"PORTAL-{uuid.uuid4().hex[:12]}"
-    ticket = RawTicket(
+    _ticket = RawTicket(  # noqa: F841
         id=ticket_id,
         source=TicketSource.generic,
         title=body.title,
@@ -6572,7 +6762,7 @@ async def delete_data_retention_policy(
     return DataRetentionPolicyResponse(policy=record)
 
 
-import re as _re
+import re as _re  # noqa: E402
 
 _PII_PATTERNS: dict[str, str] = {
     "email": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
@@ -6865,7 +7055,6 @@ async def get_performance_metrics(
             detail="Performance monitoring is not enabled. Set PERFORMANCE_MONITORING_ENABLED=true.",
         )
 
-    import os as _os
 
     uptime = time.monotonic() - _app_start_time
     avg_resp = round(_total_response_time / _request_count * 1000, 2) if _request_count > 0 else 0.0
@@ -7451,7 +7640,6 @@ async def detect_intent(
             detail="Intent detection is not enabled. Set INTENT_DETECTION_ENABLED=true.",
         )
 
-    import re as _re
 
     text_lower = body.text.lower()
     scored_intents: list[IntentResult] = []
@@ -7556,10 +7744,8 @@ async def predict_resolution_time(
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
 
     category = ticket_row[0] or "unknown"
-    priority = ticket_row[1] or "medium"
-    ticket_status = ticket_row[2] or "open"
-
-    # Calculate historical averages
+    priority = ticket_row[1] or "medium"  # noqa: F841
+    ticket_status = ticket_row[2] or "open"  # noqa: F841
     async with _db.execute(
         "SELECT AVG(CAST((julianday(COALESCE(updated_at, processed_at)) - julianday(COALESCE(created_at, processed_at))) * 24 AS REAL)) FROM processed_tickets WHERE category = ? AND ticket_status = 'resolved'",
         (category,),
@@ -7693,7 +7879,7 @@ async def predict_satisfaction(
     if not ticket_row:
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
 
-    category = ticket_row[0] or "unknown"
+    category = ticket_row[0] or "unknown"  # noqa: F841
     priority = ticket_row[1] or "medium"
     ticket_status = ticket_row[2] or "open"
     sentiment = ticket_row[3] or "neutral"
@@ -7931,9 +8117,7 @@ async def smart_assign_ticket(
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
 
     category = ticket_row[0] or "general"
-    priority = ticket_row[1] or "medium"
-
-    # Fetch available agents
+    priority = ticket_row[1] or "medium"  # noqa: F841
     async with _db.execute(
         "SELECT agent_id, name, specialisations, max_capacity, current_load, avg_resolution_hours, avg_satisfaction, categories FROM agent_profiles WHERE current_load < max_capacity"
     ) as cursor:
@@ -8094,7 +8278,8 @@ async def portal():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    log.error("unhandled_exception", path=str(request.url), error=str(exc), exc_info=True)
+    request_id = request.headers.get("X-Request-ID", "unknown")
+    log.error("unhandled_exception", path=str(request.url), error=str(exc), request_id=request_id, exc_info=True)
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(error="internal_server_error", detail=str(exc)).model_dump(),

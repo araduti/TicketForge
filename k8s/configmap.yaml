@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ticketforge-config
+  namespace: ticketforge
+  labels:
+    app.kubernetes.io/name: ticketforge
+data:
+  LLM_PROVIDER: "ollama"
+  OLLAMA_BASE_URL: "http://ollama.ticketforge.svc.cluster.local:11434"
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "production"
+  VECTOR_STORE_PATH: "/data/vector_store"
+  WEBHOOK_ENABLED: "true"

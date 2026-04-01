@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -30,34 +29,6 @@ os.environ["TICKET_TAGS_ENABLED"] = "true"
 os.environ["TICKET_TIMELINE_ENABLED"] = "true"
 
 from main import app, lifespan  # noqa: E402
-from models import (  # noqa: E402
-    ApprovalDecision,
-    ApprovalListResponse,
-    ApprovalRecord,
-    ApprovalRequestCreate,
-    ApprovalResponse,
-    ApprovalStatus,
-    AutomationRuleAction,
-    AutomationRuleCondition,
-    AutomationRuleCreate,
-    AutomationRuleListResponse,
-    AutomationRuleRecord,
-    AutomationRuleResponse,
-    ContactCreate,
-    ContactListResponse,
-    ContactRecord,
-    ContactResponse,
-    ContactTicketsResponse,
-    MacroAction,
-    MacroCreate,
-    MacroExecuteResponse,
-    MacroListResponse,
-    MacroRecord,
-    MacroResponse,
-    TicketLockCreate,
-    TicketLockRecord,
-    TicketLockResponse,
-)
 
 DB_PATH = "./test_ticketforge_phase9.db"
 

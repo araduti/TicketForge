@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -29,28 +28,6 @@ os.environ["SKILL_ROUTING_ENABLED"] = "true"
 os.environ["TICKET_TAGS_ENABLED"] = "true"
 
 from main import app, lifespan  # noqa: E402
-from models import (  # noqa: E402
-    AgentRecommendation,
-    AgentRecommendationResponse,
-    AgentSkillCreate,
-    AgentSkillListResponse,
-    AgentSkillRecord,
-    AgentSkillResponse,
-    BulkOperationResponse,
-    BulkOperationResult,
-    BulkStatusUpdate,
-    BulkTagUpdate,
-    ResponseTemplateCreate,
-    ResponseTemplateListResponse,
-    ResponseTemplateRecord,
-    ResponseTemplateResponse,
-    SLAPrediction,
-    SLAPredictionResponse,
-    TicketActivityRecord,
-    TicketActivityResponse,
-    TicketCommentCreate,
-    TicketCommentResponse,
-)
 
 DB_PATH = "./test_ticketforge_phase8.db"
 

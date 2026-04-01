@@ -469,10 +469,37 @@ class Settings(BaseSettings):
         description="Enable intelligent agent assignment (POST /tickets/{id}/smart-assign, POST/GET /agent-profiles, GET /analytics/agent-performance-matrix)",
     )
 
+    # ── Phase A: Security Hardening ──────────────────────────────────────────
+    cors_allowed_origins: str | list[str] = Field(
+        default=["*"],
+        description="Comma-separated list of allowed CORS origins (set via CORS_ALLOWED_ORIGINS env var)",
+    )
+    cors_allow_credentials: bool = Field(default=False, description="Allow credentials in CORS requests")
+    cors_allow_methods: str | list[str] = Field(
+        default=["*"],
+        description="Comma-separated list of allowed CORS methods",
+    )
+    cors_allow_headers: str | list[str] = Field(
+        default=["*"],
+        description="Comma-separated list of allowed CORS headers",
+    )
+    csp_enabled: bool = Field(default=True, description="Enable Content Security Policy headers")
+    input_sanitisation_enabled: bool = Field(default=True, description="Enable HTML input sanitisation on user-supplied text")
+    request_id_enabled: bool = Field(default=True, description="Enable X-Request-ID middleware")
+    api_key_hashing_enabled: bool = Field(default=True, description="Enable bcrypt hashing of API keys at rest")
+
+    # ── Phase D: Observability ───────────────────────────────────────────────
+    otel_enabled: bool = Field(default=False, description="Enable OpenTelemetry distributed tracing")
+    otel_service_name: str = Field(default="ticketforge", description="OpenTelemetry service name")
+    otel_exporter_endpoint: str = Field(default="http://localhost:4317", description="OTLP exporter endpoint (gRPC)")
+    sentry_dsn: str = Field(default="", description="Sentry DSN for error tracking (leave empty to disable)")
+    sentry_traces_sample_rate: float = Field(default=0.1, description="Sentry traces sample rate (0.0 to 1.0)")
+    sentry_environment: str = Field(default="production", description="Sentry environment tag")
+
     # ── App ───────────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
     environment: str = Field(default="production")
-    host: str = Field(default="0.0.0.0")
+    host: str = Field(default="0.0.0.0")  # noqa: S104  # nosec B104
     port: int = Field(default=8000)
 
     @field_validator("api_keys", mode="before")
@@ -491,6 +518,27 @@ class Settings(BaseSettings):
                 return json.loads(v)
             except json.JSONDecodeError:
                 return {}
+        return v  # type: ignore[return-value]
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v  # type: ignore[return-value]
+
+    @field_validator("cors_allow_methods", mode="before")
+    @classmethod
+    def _parse_cors_methods(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            return [m.strip() for m in v.split(",") if m.strip()]
+        return v  # type: ignore[return-value]
+
+    @field_validator("cors_allow_headers", mode="before")
+    @classmethod
+    def _parse_cors_headers(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            return [h.strip() for h in v.split(",") if h.strip()]
         return v  # type: ignore[return-value]
 
 

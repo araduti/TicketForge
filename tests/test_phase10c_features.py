@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -27,38 +26,6 @@ os.environ["PERFORMANCE_MONITORING_ENABLED"] = "true"
 os.environ["UX_PREFERENCES_ENABLED"] = "true"
 
 from main import app, lifespan
-from models import (
-    AuditExportResponse,
-    CacheInvalidateRequest,
-    CacheInvalidateResponse,
-    CacheStatsResponse,
-    ConnectionPoolStatsResponse,
-    DataRetentionPolicyCreate,
-    DataRetentionPolicyListResponse,
-    DataRetentionPolicyRecord,
-    DataRetentionPolicyResponse,
-    OnboardingCompleteStepRequest,
-    OnboardingCompleteStepResponse,
-    OnboardingStatusResponse,
-    OnboardingStep,
-    PerformanceMetrics,
-    PerformanceMetricsResponse,
-    PIIRedactRequest,
-    PIIRedactResponse,
-    SecurityPostureItem,
-    SecurityPostureResponse,
-    UserPreferences,
-    UserPreferencesResponse,
-    UserPreferencesUpdate,
-    WorkflowCreate,
-    WorkflowEdge,
-    WorkflowListResponse,
-    WorkflowNode,
-    WorkflowRecord,
-    WorkflowResponse,
-    WorkflowValidationResponse,
-    WorkflowValidationResult,
-)
 
 DB_PATH = "./test_ticketforge_phase10c.db"
 

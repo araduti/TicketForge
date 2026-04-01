@@ -1,0 +1,118 @@
+groups:
+  - name: ticketforge.rules
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 5xx error rate detected"
+          description: "HTTP 5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes, exceeding the 5% threshold."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/high-error-rate"
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+          > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "P99 latency exceeds 2 seconds"
+          description: "The 99th percentile request latency is {{ $value | humanizeDuration }}, exceeding the 2-second threshold."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/high-latency-p99"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+          > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 latency exceeds 1 second"
+          description: "The 95th percentile request latency is {{ $value | humanizeDuration }}, exceeding the 1-second threshold for 10 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/high-latency-p95"
+
+      - alert: EndpointDown
+        expr: probe_success{job="ticketforge"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TicketForge health check endpoint is down"
+          description: "The health check probe for {{ $labels.instance }} has been failing for more than 2 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/endpoint-down"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes{container="ticketforge"}
+            /
+            container_spec_memory_limit_bytes{container="ticketforge"}
+          ) > 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on TicketForge container"
+          description: "Container memory usage is at {{ $value | humanizePercentage }} of its limit for over 10 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/high-memory-usage"
+
+      - alert: HighCPUUsage
+        expr: |
+          (
+            rate(container_cpu_usage_seconds_total{container="ticketforge"}[5m])
+            /
+            container_spec_cpu_quota{container="ticketforge"}
+            * container_spec_cpu_period{container="ticketforge"}
+          ) > 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on TicketForge container"
+          description: "Container CPU usage is at {{ $value | humanizePercentage }} of its limit for over 10 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/high-cpu-usage"
+
+      - alert: SLABreachRateHigh
+        expr: |
+          (
+            sum(rate(ticketforge_sla_breaches_total[15m]))
+            /
+            sum(rate(ticketforge_tickets_processed_total[15m]))
+          ) > 0.10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SLA breach rate exceeds 10%"
+          description: "The SLA breach rate is {{ $value | humanizePercentage }} over the last 15 minutes, exceeding the 10% threshold."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/sla-breach-rate"
+
+      - alert: DatabaseConnectionErrors
+        expr: ticketforge_db_connection_errors_total > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection errors detected"
+          description: "There have been {{ $value }} database connection errors in the last 5 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/database-connection-errors"
+
+      - alert: RateLimitExceeded
+        expr: |
+          sum(rate(http_requests_total{status="429"}[1m])) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limit responses exceeding threshold"
+          description: "Rate limit (HTTP 429) responses are at {{ $value }}/min, exceeding the 50/min threshold for 5 minutes."
+          runbook_url: "https://wiki.example.com/runbooks/ticketforge/rate-limit-exceeded"

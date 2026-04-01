@@ -1,0 +1,77 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/araduti/ticketforge
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: ticketforge.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ticketforge-tls
+      hosts:
+        - ticketforge.example.com
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+config:
+  LLM_PROVIDER: "ollama"
+  OLLAMA_BASE_URL: "http://ollama.ticketforge.svc.cluster.local:11434"
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "production"
+  VECTOR_STORE_PATH: "/data/vector_store"
+  WEBHOOK_ENABLED: "true"
+
+secrets:
+  # IMPORTANT: Replace these with your actual secret values (plain text; they will be base64-encoded by Kubernetes).
+  OPENAI_API_KEY: "changeme"
+  ANTHROPIC_API_KEY: "changeme"
+  JIRA_API_TOKEN: "changeme"
+  SLACK_BOT_TOKEN: "changeme"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3

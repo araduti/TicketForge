@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -244,7 +243,6 @@ class TestChatbotModule:
 
     def test_session_management(self):
         from chatbot import (  # noqa: PLC0415
-            _sessions,
             add_message,
             clear_session,
             get_history,
